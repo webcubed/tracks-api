@@ -1,0 +1,9 @@
+node_modules/
+
+.env
+.env.local
+
+data/raw/*
+data/extracted/*
+!data/raw/.gitkeep
+!data/extracted/.gitkeep

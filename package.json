@@ -1,13 +1,26 @@
 {
-  "name": "tracks-api",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "packageManager": "pnpm@10.33.2"
+	"name": "tracks-api",
+	"version": "1.0.0",
+	"author": "",
+	"description": "",
+	"keywords": [],
+	"license": "ISC",
+	"main": "index.js",
+	"scripts": {
+		"format": "prettier --write .",
+		"lint": "xo src xo.config.mjs",
+		"lint:fix": "xo --fix src xo.config.mjs"
+	},
+	"dependencies": {
+		"@hono/node-server": "^2.0.3",
+		"hono": "^4.12.22",
+		"prettier": "^3.8.3"
+	},
+	"devDependencies": {
+		"@ianvs/prettier-plugin-sort-imports": "^4.7.1",
+		"prettier-plugin-pkgsort": "^0.3.0",
+		"tsx": "^4.22.3",
+		"typescript": "^6.0.3",
+		"xo": "^2.0.2"
+	}
 }
