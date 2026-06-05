@@ -49,7 +49,7 @@ jobs:
           unzip bus_busco.zip -d gtfs/raw/bus_busco
 
       - name: Create Parquet files
-        run: tsx scripts/convert.ts
+        run: npx tsx scripts/convert.ts
 
       - name: Publish Github Release
         uses: softprops/action-gh-release@v2

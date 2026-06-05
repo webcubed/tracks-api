@@ -17,13 +17,11 @@
 		"@duckdb/node-api": "1.5.3-r.1",
 		"@hono/node-server": "^2.0.3",
 		"@libsql/client": "^0.17.3",
-		"@supabase/supabase-js": "^2.106.1",
-		"adm-zip": "^0.5.17",
 		"csv-parser": "^3.2.1",
 		"dotenv": "^17.4.2",
-		"tsx": "^4.22.4",
 		"hono": "^4.12.22",
-		"prettier": "^3.8.3"
+		"prettier": "^3.8.3",
+		"tsx": "^4.22.4"
 	},
 	"devDependencies": {
 		"@ianvs/prettier-plugin-sort-imports": "^4.7.1",
