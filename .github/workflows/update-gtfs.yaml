@@ -1,0 +1,62 @@
+name: Update static GTFS parquet files
+
+on:
+  schedule:
+    - cron: 0 0 * * 0 # every Sunday at midnight
+  workflow_dispatch:
+
+jobs:
+  process-gtfs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v2
+        with:
+          node-version: "24"
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Download & Extract GTFS
+        run: |
+          mkdir -p gtfs/raw
+
+          curl -L "https://rrgtfsfeeds.s3.amazonaws.com/gtfs_supplemented.zip" -o subway.zip #
+          unzip subway.zip -d gtfs/raw/subway
+
+          curl -L "https://rrgtfsfeeds.s3.amazonaws.com/gtfslirr.zip" -o lirr.zip
+          unzip lirr.zip -d gtfs/raw/lirr
+
+          curl -L "https://rrgtfsfeeds.s3.amazonaws.com/gtfs_bx.zip" -o bus_bx.zip
+          unzip bus_bx.zip -d gtfs/raw/bus_bx
+
+          curl -L "https://rrgtfsfeeds.s3.amazonaws.com/gtfs_b.zip" -o bus_b.zip
+          unzip bus_b.zip -d gtfs/raw/bus_b
+
+          curl -L "https://rrgtfsfeeds.s3.amazonaws.com/gtfs_m.zip" -o bus_m.zip
+          unzip bus_m.zip -d gtfs/raw/bus_m
+
+          curl -L "https://rrgtfsfeeds.s3.amazonaws.com/gtfs_q.zip" -o bus_q.zip
+          unzip bus_q.zip -d gtfs/raw/bus_q
+
+          curl -L "https://rrgtfsfeeds.s3.amazonaws.com/gtfs_si.zip" -o bus_si.zip
+          unzip bus_si.zip -d gtfs/raw/bus_si
+
+          curl -L "https://rrgtfsfeeds.s3.amazonaws.com/gtfs_busco.zip" -o bus_busco.zip
+          unzip bus_busco.zip -d gtfs/raw/bus_busco
+
+      - name: Create Parquet files
+        run: tsx scripts/convert.ts
+
+      - name: Publish Github Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest-gtfs
+          name: Latest GTFS Parquet Files
+          files: gtfs/output/*.parquet
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
