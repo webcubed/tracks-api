@@ -19,7 +19,7 @@ for (const feed of feeds) {
 		promises.push(
 			connection.run(`
 	COPY (
-		SELECT * FROM read_csv_auto('${fileName}.txt', all_varchar=true)
+		SELECT * FROM read_csv_auto('${path.join(rawDir, fileName)}.txt', all_varchar=true)
 	) TO '${path.join(outputDir, `${feed}_${fileName}.parquet`)}' (FORMAT PARQUET);`)
 		);
 	}
