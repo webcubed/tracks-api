@@ -8,6 +8,10 @@ const connection = await instance.connect();
 const rawDir = "./gtfs/raw";
 const outputDir = "./gtfs/output";
 
+if (!fs.existsSync(outputDir)) {
+	fs.mkdirSync(outputDir, { recursive: true });
+}
+
 const feeds = fs.readdirSync(path.join(rawDir));
 
 const promises = [];
