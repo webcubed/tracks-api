@@ -51,7 +51,7 @@ export const REALTIME_FEEDS = {
 
 export const PROTOBUF_SCHEMAS = {
 	GTFS_REALTIME:
-		"https://raw.githubusercontent.com/google/gtfs-realtime-bindings/master/dotNet/GtfsRealtimeBindings/gtfs-realtime.proto",
+		"https://raw.githubusercontent.com/OneBusAway/onebusaway-gtfs-realtime-api/master/src/main/proto/com/google/transit/realtime/gtfs-realtime-NYCT.proto",
 	MTA_SUBWAY:
 		"https://raw.githubusercontent.com/OneBusAway/onebusaway-gtfs-realtime-api/master/src/main/proto/com/google/transit/realtime/gtfs-realtime-MTARR.proto",
 	SERVICE_ALERTS:
