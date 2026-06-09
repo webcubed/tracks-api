@@ -15,19 +15,21 @@
 	"dependencies": {
 		"@duckdb/duckdb-wasm": "1.33.1-dev45.0",
 		"@duckdb/node-api": "1.5.3-r.1",
-		"@hono/node-server": "^2.0.3",
+		"@hono/node-server": "^2.0.4",
 		"@libsql/client": "^0.17.3",
 		"csv-parser": "^3.2.1",
 		"dotenv": "^17.4.2",
-		"hono": "^4.12.22",
+		"hono": "^4.12.24",
 		"prettier": "^3.8.3",
+		"protobufjs": "^8.6.1",
 		"tsx": "^4.22.4"
 	},
 	"devDependencies": {
 		"@ianvs/prettier-plugin-sort-imports": "^4.7.1",
 		"@types/adm-zip": "^0.5.8",
-		"@types/node": "^25.9.1",
+		"@types/node": "^25.9.2",
 		"prettier-plugin-pkgsort": "^0.3.0",
+		"protobufjs-cli": "^2.5.2",
 		"typescript": "^6.0.3",
 		"xo": "^2.0.2"
 	}
