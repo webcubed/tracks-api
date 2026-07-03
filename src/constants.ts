@@ -57,3 +57,9 @@ export const PROTOBUF_SCHEMAS = {
 	SERVICE_ALERTS:
 		"https://raw.githubusercontent.com/OneBusAway/onebusaway-gtfs-realtime-api/master/src/main/proto/com/google/transit/realtime/gtfs-realtime-service-status.proto",
 } as const;
+
+export const getStaticFeedUrl: (agency: string, table: string) => string = (
+	agency: string,
+	table: string
+) =>
+	`https://github.com/webcubed/tracks-api/releases/download/latest-gtfs/${agency}_${table}.parquet`;

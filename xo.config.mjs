@@ -25,6 +25,7 @@ const xoConfig = {
 		"import-x/extensions": "off",
 		"unicorn/prefer-node-protocol": "off",
 		"n/prefer-global/process": "off",
+		"capitalized-comments": "off",
 	},
 };
 
