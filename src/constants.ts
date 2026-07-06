@@ -58,8 +58,40 @@ export const PROTOBUF_SCHEMAS = {
 		"https://raw.githubusercontent.com/OneBusAway/onebusaway-gtfs-realtime-api/master/src/main/proto/com/google/transit/realtime/gtfs-realtime-service-status.proto",
 } as const;
 
-export const getStaticFeedUrl: (agency: string, table: string) => string = (
-	agency: string,
-	table: string
-) =>
-	`https://github.com/webcubed/tracks-api/releases/download/latest-gtfs/${agency}_${table}.parquet`;
+export const AGENCIES = {
+	SUBWAY: "subway",
+	LIRR: "lirr",
+	BRONX: "bus_bx",
+	BROOKLYN: "bus_b",
+	BUSCO: "bus_busco",
+	MANHATTAN: "bus_m",
+	SI: "bus_si",
+	QUEENS: "bus_q",
+};
+
+type SubwayTables =
+	| "agency"
+	| "calendar_dates"
+	| "calendar"
+	| "feed_info"
+	| "routes"
+	| "shapes"
+	| "stop_times"
+	| "stops"
+	| "transfers"
+	| "trips";
+type BusTables = Exclude<SubwayTables, "transfers">;
+type BusAgencies = Exclude<keyof typeof AGENCIES, "LIRR" | "SUBWAY">;
+type LirrTables = Exclude<SubwayTables, "calendar">;
+
+type AgencyTableMap = {
+	SUBWAY: SubwayTables;
+	LIRR: LirrTables;
+} & Record<BusAgencies, BusTables>;
+
+export function getStaticFeedUrl<T extends keyof AgencyTableMap>(
+	agency: T,
+	table: AgencyTableMap[T]
+) {
+	return `https://github.com/webcubed/tracks-api/releases/download/latest-gtfs/${agency}_${table}.parquet`;
+}
