@@ -101,3 +101,16 @@ export type Trips = {
 	block_id?: string; // Bus
 	shape_id: string;
 };
+
+export type TableMap = {
+	agency: Agency;
+	routes: Routes;
+	stops: Stops;
+	stop_times: StopTimes;
+	trips: Trips;
+	shapes: Shapes;
+	calendar: Calendar;
+	calendar_dates: CalendarDates;
+	transfers: Transfers;
+	feed_info: FeedInfo;
+};

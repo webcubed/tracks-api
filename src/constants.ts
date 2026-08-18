@@ -84,7 +84,7 @@ type BusTables = Exclude<SubwayTables, "transfers">;
 type BusAgencies = Exclude<keyof typeof AGENCIES, "LIRR" | "SUBWAY">;
 type LirrTables = Exclude<SubwayTables, "calendar">;
 
-type AgencyTableMap = {
+export type AgencyTableMap = {
 	SUBWAY: SubwayTables;
 	LIRR: LirrTables;
 } & Record<BusAgencies, BusTables>;
