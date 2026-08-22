@@ -69,7 +69,7 @@ export const AGENCIES = {
 	QUEENS: "bus_q",
 };
 
-type SubwayTables =
+type AllTables =
 	| "agency"
 	| "calendar_dates"
 	| "calendar"
@@ -80,14 +80,19 @@ type SubwayTables =
 	| "stops"
 	| "transfers"
 	| "trips";
-type BusTables = Exclude<SubwayTables, "transfers">;
-type BusAgencies = Exclude<keyof typeof AGENCIES, "LIRR" | "SUBWAY">;
-type LirrTables = Exclude<SubwayTables, "calendar">;
+type BusTables = Exclude<AllTables, "transfers">;
+type LirrTables = Exclude<AllTables, "calendar">;
 
 export type AgencyTableMap = {
-	SUBWAY: SubwayTables;
-	LIRR: LirrTables;
-} & Record<BusAgencies, BusTables>;
+	subway: AllTables;
+	lirr: LirrTables;
+	bus_bx: BusTables;
+	bus_b: BusTables;
+	bus_busco: BusTables;
+	bus_m: BusTables;
+	bus_si: BusTables;
+	bus_q: BusTables;
+};
 
 export function getStaticFeedUrl<T extends keyof AgencyTableMap>(
 	agency: T,

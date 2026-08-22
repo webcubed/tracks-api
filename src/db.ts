@@ -8,12 +8,10 @@ export async function getDb() {
 	console.log("init'ing db");
 	const instance = await DuckDBInstance.create(":memory:");
 	connection = await instance.connect();
-	await connection.run(`
-		INSTALL httpfs
-		LOAD httpfs
-		INSTALL json
-		LOAD json
-	`);
+	await connection.run("INSTALL httpfs");
+	await connection.run("LOAD httpfs");
+	await connection.run("INSTALL json");
+	await connection.run("LOAD json");
 	console.log("db up");
 	return connection;
 }
