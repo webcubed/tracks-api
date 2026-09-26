@@ -54,7 +54,7 @@ First boot downloads every static table plus shape geometry (~13 seconds); the t
 
 ## Architecture
 
-```
+```text
 src/
 ├── index.ts              # Hono + serve; warms static tables, hourly refresh
 ├── constants.ts          # feed URLs, agency ids, table availability per feed

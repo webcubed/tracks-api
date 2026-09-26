@@ -1,10 +1,10 @@
 import type { AgencyId } from "@/constants";
-import type { StopRef } from "@/services/stops";
+import type { StopRef } from "@/services/network";
 import type { FeedEntity, FeedTripUpdate } from "@/types/realtime";
 import { AGENCY_IDS } from "@/constants";
+import { getStopRef } from "@/services/network";
 import { fetchRealtime, lookupTrips } from "@/services/realtime";
 import { getRoute } from "@/services/routes";
-import { getStopRef } from "@/services/stops";
 
 export type ApiVehicle = {
 	id: string;

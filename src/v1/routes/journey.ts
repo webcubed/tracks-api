@@ -1,7 +1,8 @@
 import { isAgencyId } from "@/constants";
+import { isValidDate, today } from "@/lib/time";
 import { planJourney } from "@/services/journey";
 import { isoNewYork } from "@/services/realtime";
-import { isValidDate, resolveStopIds, today } from "@/services/stops";
+import { resolveStopIds } from "@/services/stops";
 import { Hono } from "hono";
 
 export const journey = new Hono();

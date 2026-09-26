@@ -1,11 +1,7 @@
 import type { Proximity } from "@/services/stops";
-import {
-	getSchedule,
-	getStop,
-	getStops,
-	isValidDate,
-	today,
-} from "@/services/stops";
+import { isValidDate, today } from "@/lib/time";
+import { getSchedule } from "@/services/schedule";
+import { getStop, getStops } from "@/services/stops";
 import { optionalAgency } from "@/v1/middleware";
 import { Hono } from "hono";
 

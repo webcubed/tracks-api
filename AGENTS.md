@@ -51,7 +51,7 @@ Server startup awaits `loadTable(id, "agency")` and `getRoutes(id)` for all 8 fe
 
 ## Layout
 
-```
+```text
 src/
 ├── index.ts              # Hono + serve; warms agency/routes before listening
 ├── db.ts                 # memoized DuckDB connection (promise-memoized, not boolean)
@@ -61,8 +61,11 @@ src/
 │   ├── loadTable.ts      # loadTable(agency, table) — promise-memoized, one feed
 │   ├── memoize.ts        # memoize(fn, ttl?) + clearMemoized() for the hourly refresh
 │   ├── geo.ts            # distanceMeters (haversine)
-│   └── time.ts           # clockSeconds for schedule times (>24:00)
+│   └── time.ts           # clockSeconds/clockOf, today, isValidDate
 ├── services/             # one file per endpoint group; type + toApi + id index
+│   ├── network.ts        # the per-feed indexes: stopIndex, directionIndex, transferIndex
+│   ├── schedule.ts       # getSchedule + activeServices (shared with journey)
+│   └── journey/          # the round-based planner: types, labels, scan, render
 ├── v1/index.ts           # mounts route groups
 ├── v1/routes/            # Hono routers, one per spec section
 └── types/

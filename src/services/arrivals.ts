@@ -1,18 +1,15 @@
 import type { AgencyId } from "@/constants";
-import type { ApiSchedule, Departure } from "@/services/stops";
+import type { ApiSchedule, Departure } from "@/services/schedule";
 import type {
 	FeedEntity,
 	FeedStopTimeUpdate,
 	FeedTripUpdate,
 } from "@/types/realtime";
-import { clockSeconds } from "@/lib/time";
+import { clockSeconds, today } from "@/lib/time";
+import { directionIndex } from "@/services/network";
 import { fetchRealtime, isoNewYork, lookupTrips } from "@/services/realtime";
-import {
-	directionIndex,
-	getSchedule,
-	resolveStopIds,
-	today,
-} from "@/services/stops";
+import { getSchedule } from "@/services/schedule";
+import { resolveStopIds } from "@/services/stops";
 
 export type ApiArrival = {
 	route: string;
