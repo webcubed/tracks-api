@@ -1,6 +1,6 @@
 import type { AgencyId } from "@/constants";
 import { isAgencyId } from "@/constants";
-import { getStop, getStops } from "@/services/stops";
+import { getSchedule, getStop, getStops } from "@/services/stops";
 import { Hono } from "hono";
 
 export const stops = new Hono();
@@ -30,6 +30,40 @@ stops.get("/", async (c) => {
 	return c.json({ data });
 });
 
+stops.get("/:id/schedule", async (c) => {
+	const id = c.req.param("id");
+	const raw = c.req.query("date");
+	const date = raw ?? today();
+
+	if (!isValidDate(date)) {
+		return c.json(
+			{
+				error: {
+					code: "INVALID_DATE",
+					message: `Invalid date '${date}', expected YYYY-MM-DD`,
+				},
+			},
+			400
+		);
+	}
+
+	const schedule = await getSchedule(id, date);
+
+	if (!schedule) {
+		return c.json(
+			{
+				error: {
+					code: "STOP_NOT_FOUND",
+					message: `No stop found with id '${id}'`,
+				},
+			},
+			404
+		);
+	}
+
+	return c.json({ data: schedule });
+});
+
 stops.get("/:id", async (c) => {
 	const id = c.req.param("id");
 	const stop = await getStop(id);
@@ -48,3 +82,24 @@ stops.get("/:id", async (c) => {
 
 	return c.json({ data: stop });
 });
+
+/** Today in the service's own timezone, not the server's. */
+function today(): string {
+	return new Intl.DateTimeFormat("en-CA", {
+		timeZone: "America/New_York",
+	}).format(new Date());
+}
+
+/**
+ * Strict `YYYY-MM-DD`: parse it, then check the round trip. Rejects
+ * `2026-2-3`, `garbage` and impossible dates like `2026-02-31` (which parse
+ * as March 3rd), and needs no regex flags — `tsconfig` targets ES2017, which
+ * can't compile the `v` flag xo asks for.
+ */
+function isValidDate(value: string): boolean {
+	const date = new Date(`${value}T00:00:00Z`);
+
+	if (Number.isNaN(date.getTime())) return false;
+
+	return date.toISOString().slice(0, 10) === value;
+}

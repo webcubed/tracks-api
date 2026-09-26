@@ -1,6 +1,6 @@
 import type { AgencyId } from "@/constants";
 import type { Stops } from "@/types/static";
-import { AGENCY_IDS, getStaticFeedUrl } from "@/constants";
+import { AGENCY_IDS, CALENDAR_FREE_FEEDS, getStaticFeedUrl } from "@/constants";
 import { loadTable } from "@/lib/loadTable";
 import { memoize } from "@/lib/memoize";
 import { runQuery } from "@/lib/parquet";
@@ -136,21 +136,177 @@ export async function getStops(
 	return stops;
 }
 
+type ResolvedStop = { agency: AgencyId; index: FeedStops; row: Stops };
+
 /**
  * Stop ids are feed-scoped and 977 of them repeat between subway and LIRR
  * ("127", "101", …). The spec's `GET /v1/stops/:id` has no `agency` param, so
  * feeds are searched in `AGENCY_IDS` order and the first hit wins — subway
  * first, matching the spec's `stop=127` subway example.
  */
-export async function getStop(id: string): Promise<ApiStop | undefined> {
+async function resolveStop(id: string): Promise<ResolvedStop | undefined> {
 	const indexes = await Promise.all(
 		AGENCY_IDS.map(async (feed) => stopIndex(feed))
 	);
 
 	for (const [i, feed] of AGENCY_IDS.entries()) {
 		const row = indexes[i].byId.get(id);
-		if (row) return toApi(feed, row, indexes[i].routes.get(id));
+		if (row) return { agency: feed, index: indexes[i], row };
 	}
 
 	return undefined;
+}
+
+export async function getStop(id: string): Promise<ApiStop | undefined> {
+	const resolved = await resolveStop(id);
+	if (!resolved) return undefined;
+
+	return toApi(resolved.agency, resolved.row, resolved.index.routes.get(id));
+}
+
+export type Departure = {
+	route: string;
+	headsign: string;
+	departureTime: string;
+	tripId: string;
+	/** Travel direction of the trip, derived from its shape's endpoints. */
+	direction: string;
+};
+
+export type ApiSchedule = {
+	stop: { id: string; name: string };
+	departures: Departure[];
+};
+
+type DepartureRow = {
+	route_id: string;
+	trip_headsign?: string;
+	trip_id: string;
+	shape_id?: string;
+	departure_time: string;
+};
+
+type ShapeEnds = {
+	shape_id: string;
+	lon0: number;
+	lat0: number;
+	lon1: number;
+	lat1: number;
+};
+
+const WEEKDAYS = [
+	"sunday",
+	"monday",
+	"tuesday",
+	"wednesday",
+	"thursday",
+	"friday",
+	"saturday",
+];
+
+/**
+ * `shape_id` → "northbound" / "southbound" / "eastbound" / "westbound", from
+ * comparing the shape's first and last point. `trips.direction_id` means
+ * nothing portable across feeds (subway, LIRR and bus number it differently);
+ * the geometry is the same fact for all of them.
+ */
+const directionIndex = memoize(async (agency: AgencyId) => {
+	const shapesUrl = getStaticFeedUrl(agency, "shapes");
+	const rows = await runQuery<ShapeEnds>(
+		`SELECT shape_id,
+			arg_min(CAST(shape_pt_lon AS DOUBLE), CAST(shape_pt_sequence AS INTEGER)) AS lon0,
+			arg_min(CAST(shape_pt_lat AS DOUBLE), CAST(shape_pt_sequence AS INTEGER)) AS lat0,
+			arg_max(CAST(shape_pt_lon AS DOUBLE), CAST(shape_pt_sequence AS INTEGER)) AS lon1,
+			arg_max(CAST(shape_pt_lat AS DOUBLE), CAST(shape_pt_sequence AS INTEGER)) AS lat1
+		 FROM read_parquet('${shapesUrl}')
+		 GROUP BY shape_id`
+	);
+
+	const index = new Map<string, string>();
+	for (const shape of rows) index.set(shape.shape_id, directionOf(shape));
+
+	return index;
+});
+
+function directionOf(shape: ShapeEnds): string {
+	const lat = shape.lat1 - shape.lat0;
+	const lon = shape.lon1 - shape.lon0;
+
+	if (Math.abs(lat) >= Math.abs(lon)) {
+		return lat >= 0 ? "northbound" : "southbound";
+	}
+
+	return lon >= 0 ? "eastbound" : "westbound";
+}
+
+/** Platform ids below a station — `stop_times` only ever reference those. */
+function childIds(index: FeedStops, parentId: string): string[] {
+	const ids: string[] = [];
+	for (const stop of index.byId.values()) {
+		if (stop.parent_station === parentId) ids.push(stop.stop_id);
+	}
+
+	return ids;
+}
+
+/**
+ * Departures from a stop on `date` (YYYY-MM-DD), ordered by departure time.
+ * A service runs if its calendar covers that weekday, plus its
+ * `calendar_dates` additions, minus its removals.
+ */
+export async function getSchedule(
+	id: string,
+	date: string
+): Promise<ApiSchedule | undefined> {
+	const resolved = await resolveStop(id);
+	if (!resolved) return undefined;
+
+	const { agency, index, row } = resolved;
+	const stopIds = [id, ...childIds(index, id)];
+	const gfsDate = date.replaceAll("-", "");
+	const weekday = WEEKDAYS[new Date(`${date}T12:00:00Z`).getUTCDay()];
+	const hasCalendar = !Object.hasOwn(CALENDAR_FREE_FEEDS, agency);
+
+	const datesUrl = getStaticFeedUrl(agency, "calendar_dates");
+	const additions = `SELECT service_id FROM read_parquet('${datesUrl}')
+		 WHERE ? = date AND exception_type = '1'`;
+	const removals = `SELECT service_id FROM read_parquet('${datesUrl}')
+		 WHERE ? = date AND exception_type = '2'`;
+	// LIRR ships no calendar.txt, so naming it would 404 — calendar_dates only.
+	const weekly = hasCalendar
+		? `SELECT service_id FROM read_parquet('${getStaticFeedUrl(agency, "calendar")}')
+		 WHERE ? BETWEEN start_date AND end_date AND ${weekday} = '1'`
+		: undefined;
+	const serviceSql = weekly
+		? `((${additions}) UNION (${weekly})) EXCEPT (${removals})`
+		: `(${additions}) EXCEPT (${removals})`;
+	const serviceParameters = weekly
+		? [gfsDate, gfsDate, gfsDate]
+		: [gfsDate, gfsDate];
+
+	const [departures, directions] = await Promise.all([
+		runQuery<DepartureRow>(
+			`SELECT t.trip_id, t.route_id, t.trip_headsign, t.shape_id, st.departure_time
+			 FROM read_parquet('${getStaticFeedUrl(agency, "stop_times")}') st
+			 JOIN read_parquet('${getStaticFeedUrl(agency, "trips")}') t ON t.trip_id = st.trip_id
+			 WHERE st.stop_id IN (${stopIds.map(() => "?").join(", ")})
+			   AND st.departure_time <> ''
+			   AND t.service_id IN (${serviceSql})
+			 ORDER BY st.departure_time`,
+			...stopIds,
+			...serviceParameters
+		),
+		directionIndex(agency),
+	]);
+
+	return {
+		stop: { id: row.stop_id, name: row.stop_name },
+		departures: departures.map((departure) => ({
+			route: departure.route_id,
+			headsign: departure.trip_headsign ?? "",
+			departureTime: departure.departure_time,
+			tripId: departure.trip_id,
+			direction: directions.get(departure.shape_id ?? "") ?? "",
+		})),
+	};
 }

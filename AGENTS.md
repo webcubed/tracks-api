@@ -4,11 +4,11 @@ REST API for NYC transit (subway, LIRR, bus). TypeScript + Hono + DuckDB (in-mem
 
 ## Read these first
 
-| Doc | Path |
-|---|---|
-| API spec (authoritative for response shapes) | `~/Documents/Obsidian Vault/tracks-api-design.md` |
-| Data sources / proto reference | `~/Documents/Obsidian Vault/tracks-api-data-sources.md` |
-| MTA production API outlines (fallback data) | `~/Documents/Obsidian Vault/progaming/MTA project/*.md` |
+| Doc                                          | Path                                                    |
+| -------------------------------------------- | ------------------------------------------------------- |
+| API spec (authoritative for response shapes) | `~/Documents/Obsidian Vault/tracks-api-design.md`       |
+| Data sources / proto reference               | `~/Documents/Obsidian Vault/tracks-api-data-sources.md` |
+| MTA production API outlines (fallback data)  | `~/Documents/Obsidian Vault/progaming/MTA project/*.md` |
 
 The two `tracks-api-*.md` files **are** the spec. Match response shapes, query params, enum values and error codes exactly. Where the spec shows example JSON, prefer it over whatever the raw GTFS table gives you.
 
@@ -76,6 +76,7 @@ src/
 - Stops are listed **without a `parent_station`** (subway: 496 stations, not 1488 platforms). `stop_times` only reference platforms, so a station's `routes` are the union of its children's.
 - `wheelchairAccessible` is populated from `wheelchair_boarding` (LIRR only) — `1`→`true`, `2`→`false`, `0`/absent→**omitted**, never `false`. The spec's subway example shows `true`, but no subway/bus feed carries the field.
 - 977 stop ids repeat across feeds (subway vs LIRR numeric ids). `GET /v1/stops/:id` has no `agency` param, so feeds are searched in `AGENCY_IDS` order — subway wins.
+- Schedule: service days = `calendar` weekday row ∪ `calendar_dates` `exception_type='1'`, minus `exception_type='2'`. LIRR ships no `calendar` — `CALENDAR_FREE_FEEDS` is derived from `AgencyTableMap`, so naming a table the feed lacks fails at compile time. `direction` comes from the trip shape's first/last point; `trips.direction_id` means nothing portable across feeds.
 
 ## Lint (xo 2.0.2) — write to these, don't fix up after
 
@@ -115,7 +116,7 @@ Static:
 - [x] `GET /v1/agencies`, `GET /v1/agencies/:id`
 - [x] `GET /v1/routes?agency=`, `GET /v1/routes/:id?agency=` (with `shape` GeoJSON from `shapes`)
 - [x] `GET /v1/stops?agency=&route=`, `GET /v1/stops/:id`
-- [ ] `GET /v1/stops/:id/schedule?date=`
+- [x] `GET /v1/stops/:id/schedule?date=`
 
 Realtime:
 

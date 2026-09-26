@@ -112,6 +112,20 @@ export type AgencyTableMap = {
 			: BusTables;
 };
 
+/**
+ * Feeds with no `calendar.txt` — their service days come from `calendar_dates`
+ * alone. Derived from `AgencyTableMap`, so querying a file the feed doesn't
+ * ship can't creep in unnoticed.
+ */
+type CalendarFreeFeed = {
+	[K in AgencyId]: "calendar" extends AgencyTableMap[K] ? never : K;
+}[AgencyId];
+
+export const CALENDAR_FREE_FEEDS = { lirr: true } as const satisfies Record<
+	CalendarFreeFeed,
+	true
+>;
+
 export function getStaticFeedUrl<T extends keyof AgencyTableMap>(
 	agency: T,
 	table: AgencyTableMap[T]
