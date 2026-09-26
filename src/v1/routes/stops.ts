@@ -1,4 +1,5 @@
 import type { AgencyId } from "@/constants";
+import type { Proximity } from "@/services/stops";
 import { isAgencyId } from "@/constants";
 import { getSchedule, getStop, getStops, today } from "@/services/stops";
 import { Hono } from "hono";
@@ -26,7 +27,20 @@ stops.get("/", async (c) => {
 		agency = raw;
 	}
 
-	const data = await getStops(agency, route);
+	const parsed = parseNear(
+		c.req.query("lat"),
+		c.req.query("lng"),
+		c.req.query("radius")
+	);
+
+	if (parsed.error) {
+		return c.json(
+			{ error: { code: "INVALID_LOCATION", message: parsed.error } },
+			400
+		);
+	}
+
+	const data = await getStops(agency, route, parsed.near);
 	return c.json({ data });
 });
 
@@ -95,4 +109,39 @@ function isValidDate(value: string): boolean {
 	if (Number.isNaN(date.getTime())) return false;
 
 	return date.toISOString().slice(0, 10) === value;
+}
+
+type NearResult = { near?: Proximity; error?: string };
+
+/** `lat`, `lng` and `radius` (metres) arrive together or not at all. */
+function parseNear(lat?: string, lng?: string, radius?: string): NearResult {
+	if (lat === undefined && lng === undefined && radius === undefined) {
+		return {};
+	}
+
+	if (lat === undefined || lng === undefined || radius === undefined) {
+		return { error: "lat, lng and radius must be provided together" };
+	}
+
+	const near: Proximity = {
+		lat: Number(lat),
+		lng: Number(lng),
+		radius: Number(radius),
+	};
+	const valid =
+		Number.isFinite(near.lat) &&
+		Math.abs(near.lat) <= 90 &&
+		Number.isFinite(near.lng) &&
+		Math.abs(near.lng) <= 180 &&
+		Number.isFinite(near.radius) &&
+		near.radius > 0;
+
+	if (!valid) {
+		return {
+			error:
+				"lat and lng must be coordinates and radius a positive number of metres",
+		};
+	}
+
+	return { near };
 }
