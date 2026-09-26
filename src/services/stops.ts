@@ -360,12 +360,15 @@ export type Station = { id: string; location: { lat: number; lon: number } };
 
 /**
  * Top-level stops of a feed (stations, plus standalone stops) that have
- * usable coordinates, for proximity matching.
+ * usable coordinates, for proximity matching. Reads the stops table straight,
+ * skipping the heavier join-backed index the other endpoints need.
  */
 export async function getStations(agency: AgencyId): Promise<Station[]> {
-	const index = await stopIndex(agency);
+	const rows = await loadTable(agency, "stops");
 
-	return index.topLevel.flatMap((row) => {
+	return rows.flatMap((row) => {
+		if (row.parent_station) return [];
+
 		const lat = Number(row.stop_lat);
 		const lon = Number(row.stop_lon);
 
@@ -374,6 +377,59 @@ export async function getStations(agency: AgencyId): Promise<Station[]> {
 			: [];
 	});
 }
+
+/** The station's own id plus its platforms; stop_times reference platforms. */
+export async function stopIdsOf(
+	agency: AgencyId,
+	stationId: string
+): Promise<string[]> {
+	const index = await stopIndex(agency);
+
+	return [stationId, ...childIds(index, stationId)];
+}
+
+export type TransferIndex = Map<string, Map<string, number>>;
+
+/**
+ * Station-level transfer edges from transfers.txt, keyed by each FROM
+ * station's top-level id (platform rows resolve to their parents). Only the
+ * subway and LIRR ship this file; bus feeds have no such table at all.
+ */
+export const transferIndex = memoize(async (agency: AgencyId) => {
+	const index: TransferIndex = new Map();
+	if (agency !== "subway" && agency !== "lirr") return index;
+
+	const [rows, stops] = await Promise.all([
+		loadTable(agency, "transfers"),
+		stopIndex(agency),
+	]);
+
+	for (const row of rows) {
+		const fromRow = stops.byId.get(row.from_stop_id);
+		const toRow = stops.byId.get(row.to_stop_id);
+		if (!fromRow || !toRow) continue;
+
+		// GTFS uses "" or NULL for top-level stops' parent_station; both mean
+		// the row itself, so a plain `??` wouldn't be right.
+		const fromParent =
+			fromRow.parent_station === "" || fromRow.parent_station === undefined
+				? fromRow.stop_id
+				: fromRow.parent_station;
+		const toParent =
+			toRow.parent_station === "" || toRow.parent_station === undefined
+				? toRow.stop_id
+				: toRow.parent_station;
+		if (fromParent === toParent) continue;
+
+		const seconds = Number(row.min_transfer_time) || 60;
+		const edges = index.get(fromParent) ?? new Map<string, number>();
+		const known = edges.get(toParent);
+		if (known === undefined || seconds < known) edges.set(toParent, seconds);
+		index.set(fromParent, edges);
+	}
+
+	return index;
+});
 
 /**
  * `service_id`s running on `date`: the calendar weekday row, plus
