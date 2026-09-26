@@ -15,7 +15,7 @@ export type ApiStop = {
 	routes: string[];
 	/** Metres from the query point; set only by `?lat=&lng=&radius=`. */
 	distance?: number;
-	/** Only set when the feed says so — LIRR is the only one that ships it. */
+	/** Only set when the feed says so; LIRR is the only one that ships it. */
 	wheelchairAccessible?: boolean;
 };
 
@@ -179,13 +179,19 @@ export async function getStop(id: string): Promise<ApiStop | undefined> {
 	return toApi(resolved.agency, resolved.row, resolved.index.routes.get(id));
 }
 
+export type ResolvedStopIds = {
+	agency: AgencyId;
+	stop: ApiStop;
+	ids: string[];
+};
+
 /**
  * What `/v1/arrivals` needs from a stop: its response object, and every id a
- * feed may reference it by (GTFS-RT names platforms — `127N`, `127S`).
+ * feed may reference it by (GTFS-RT names platforms, like `127N` and `127S`).
  */
 export async function resolveStopIds(
 	id: string
-): Promise<{ agency: AgencyId; stop: ApiStop; ids: string[] } | undefined> {
+): Promise<ResolvedStopIds | undefined> {
 	const resolved = await resolveStop(id);
 	if (!resolved) return undefined;
 
@@ -206,7 +212,7 @@ export type StopRef = {
 
 /**
  * Label for a stop id a real-time feed mentions: platforms resolve to their
- * station — the spec's `nextStopId: "125"` / `nextStop: "72 St"` — and the
+ * station (the spec's `nextStopId: "125"` / `nextStop: "72 St"`), and the
  * station's coordinates stand in for a vehicle that reports no position.
  */
 export async function getStopRef(
@@ -307,7 +313,7 @@ function directionOf(shape: ShapeEnds): string {
 	return lon >= 0 ? "eastbound" : "westbound";
 }
 
-/** Platform ids below a station — `stop_times` only ever reference those. */
+/** Platform ids below a station; `stop_times` only ever reference those. */
 function childIds(index: FeedStops, parentId: string): string[] {
 	const ids: string[] = [];
 	for (const stop of index.byId.values()) {
@@ -325,9 +331,69 @@ export function today(): string {
 }
 
 /**
+ * Strict `YYYY-MM-DD`: parse it, then check the round trip. Rejects
+ * `2026-2-3`, `garbage` and impossible dates like `2026-02-31` (which parse
+ * as March 3rd), and needs no regex flags: `tsconfig` targets ES2017, which
+ * can't compile the `v` flag xo asks for.
+ */
+export function isValidDate(value: string): boolean {
+	const date = new Date(`${value}T00:00:00Z`);
+
+	if (Number.isNaN(date.getTime())) return false;
+
+	return date.toISOString().slice(0, 10) === value;
+}
+
+export type Station = { id: string; location: { lat: number; lng: number } };
+
+/**
+ * Top-level stops of a feed (stations, plus standalone stops) that have
+ * usable coordinates, for proximity matching.
+ */
+export async function getStations(agency: AgencyId): Promise<Station[]> {
+	const index = await stopIndex(agency);
+
+	return index.topLevel.flatMap((row) => {
+		const lat = Number(row.stop_lat);
+		const lng = Number(row.stop_lon);
+
+		return Number.isFinite(lat) && Number.isFinite(lng)
+			? [{ id: row.stop_id, location: { lat, lng } }]
+			: [];
+	});
+}
+
+/**
+ * `service_id`s running on `date`: the calendar weekday row, plus
+ * `calendar_dates` additions, minus its removals. LIRR ships no
+ * `calendar.txt`; naming it would 404, so its weekday half is skipped.
+ */
+export function activeServices(
+	agency: AgencyId,
+	date: string
+): { sql: string; parameters: string[] } {
+	const gfsDate = date.replaceAll("-", "");
+	const weekday = WEEKDAYS[new Date(`${date}T12:00:00Z`).getUTCDay()];
+	const hasCalendar = !Object.hasOwn(CALENDAR_FREE_FEEDS, agency);
+	const datesUrl = getStaticFeedUrl(agency, "calendar_dates");
+	const additions = `SELECT service_id FROM read_parquet('${datesUrl}')
+		 WHERE ? = date AND exception_type = '1'`;
+	const removals = `SELECT service_id FROM read_parquet('${datesUrl}')
+		 WHERE ? = date AND exception_type = '2'`;
+	const weekly = hasCalendar
+		? `SELECT service_id FROM read_parquet('${getStaticFeedUrl(agency, "calendar")}')
+		 WHERE ? BETWEEN start_date AND end_date AND ${weekday} = '1'`
+		: undefined;
+	const sql = weekly
+		? `((${additions}) UNION (${weekly})) EXCEPT (${removals})`
+		: `(${additions}) EXCEPT (${removals})`;
+	const parameters = weekly ? [gfsDate, gfsDate, gfsDate] : [gfsDate, gfsDate];
+
+	return { sql, parameters };
+}
+
+/**
  * Departures from a stop on `date` (YYYY-MM-DD), ordered by departure time.
- * A service runs if its calendar covers that weekday, plus its
- * `calendar_dates` additions, minus its removals.
  */
 export async function getSchedule(
 	id: string,
@@ -338,26 +404,7 @@ export async function getSchedule(
 
 	const { agency, index, row } = resolved;
 	const stopIds = [id, ...childIds(index, id)];
-	const gfsDate = date.replaceAll("-", "");
-	const weekday = WEEKDAYS[new Date(`${date}T12:00:00Z`).getUTCDay()];
-	const hasCalendar = !Object.hasOwn(CALENDAR_FREE_FEEDS, agency);
-
-	const datesUrl = getStaticFeedUrl(agency, "calendar_dates");
-	const additions = `SELECT service_id FROM read_parquet('${datesUrl}')
-		 WHERE ? = date AND exception_type = '1'`;
-	const removals = `SELECT service_id FROM read_parquet('${datesUrl}')
-		 WHERE ? = date AND exception_type = '2'`;
-	// LIRR ships no calendar.txt, so naming it would 404 — calendar_dates only.
-	const weekly = hasCalendar
-		? `SELECT service_id FROM read_parquet('${getStaticFeedUrl(agency, "calendar")}')
-		 WHERE ? BETWEEN start_date AND end_date AND ${weekday} = '1'`
-		: undefined;
-	const serviceSql = weekly
-		? `((${additions}) UNION (${weekly})) EXCEPT (${removals})`
-		: `(${additions}) EXCEPT (${removals})`;
-	const serviceParameters = weekly
-		? [gfsDate, gfsDate, gfsDate]
-		: [gfsDate, gfsDate];
+	const service = activeServices(agency, date);
 
 	const [departures, directions] = await Promise.all([
 		runQuery<DepartureRow>(
@@ -366,10 +413,10 @@ export async function getSchedule(
 			 JOIN read_parquet('${getStaticFeedUrl(agency, "trips")}') t ON t.trip_id = st.trip_id
 			 WHERE st.stop_id IN (${stopIds.map(() => "?").join(", ")})
 			   AND st.departure_time <> ''
-			   AND t.service_id IN (${serviceSql})
+			   AND t.service_id IN (${service.sql})
 			 ORDER BY st.departure_time`,
 			...stopIds,
-			...serviceParameters
+			...service.parameters
 		),
 		directionIndex(agency),
 	]);

@@ -58,7 +58,10 @@ src/
 ├── constants.ts          # REALTIME_FEEDS, AGENCIES (as const), getStaticFeedUrl
 ├── lib/
 │   ├── parquet.ts        # queryTable(agency, table, where?) + runQuery(sql) — uncached IO
-│   └── loadTable.ts      # loadTable(agency, table) — promise-memoized, one feed
+│   ├── loadTable.ts      # loadTable(agency, table) — promise-memoized, one feed
+│   ├── memoize.ts        # memoize(fn, ttl?) + clearMemoized() for the hourly refresh
+│   ├── geo.ts            # distanceMeters (haversine)
+│   └── time.ts           # clockSeconds for schedule times (>24:00)
 ├── services/             # one file per endpoint group; type + toApi + id index
 ├── v1/index.ts           # mounts route groups
 ├── v1/routes/            # Hono routers, one per spec section
@@ -74,7 +77,8 @@ src/
 - `queryTable` = raw uncached read of one parquet file. Never memoize inside it (it takes arbitrary `WHERE`).
 - `loadTable(agency, table)` = every row of one table from **one feed**, memoized **by promise** so concurrent callers share one load. Failed loads evict themselves. Keyed on feed + table because `Routes.agency_id`/`Stops.agency_id` are the GTFS operator, shared by all six bus feeds — flattening feeds loses their origin.
 - Small tables (`agency`, `routes`, `stops`) → `loadTable` + in-memory `Map` index. Big tables (`stop_times`, `trips`, `shapes`) → `queryTable`/`runQuery` with `WHERE` per request.
-- `memoize(fn)` (`src/lib/memoize.ts`) is the shared promise-memoization helper for services. Use it for any per-key lazy index.
+- `memoize(fn, ttlMs?)` (`src/lib/memoize.ts`) is the shared promise-memoization helper for services. Use it for any per-key lazy index. `clearMemoized()` (called by the hourly refresh in `src/index.ts`) drops every memoized value; the DuckDB connection in `db.ts` keeps its own handle and survives.
+- Realtime is cached per URL for 15s (`FEED_TTL_MS` in `services/realtime.ts`, spec allows 15–30s): `fetchFeed` and the Mercury alerts fetch share one upstream request per window. Failures are never cached; a rejected entry evicts itself.
 - Promise-memoize any lazy singleton (`db.ts`, `loadTable`). A `let loaded = false` guard does **not** dedupe in-flight work — that bug shipped once already.
 - Agency IDs in URLs are **feed keys** (`subway`, `lirr`, `bus_bx`, `bus_b`, `bus_busco`, `bus_m`, `bus_si`, `bus_q`), never GTFS `agency_id` (`MTA NYCT`, `LI`). `AgencyId` ← `AGENCY_IDS`; `AgencyTableMap` is mapped from `AgencyId`.
 - `routes.txt` lists all 307 MTA bus routes in every borough feed, but each feed's `trips` only covers its own subset (Brooklyn: 68). Filter routes through `trips`, or `GET /v1/routes?agency=bus_m` returns Brooklyn routes too.
@@ -82,8 +86,11 @@ src/
 - **Subway real-time trip ids don't exist in static `trips`** — GTFS-RT publishes `{legacyTime}_{shape}` (`072350_1..S`) while static is `ASP26GEN-…_000600_1..S03R`; LIRR and bus ids do join. `getArrivals` fills subway `headsign` by matching route + direction + time (±4 min) against `getSchedule`, and takes `direction` from the platform suffix (`127N` → northbound → `uptown`).
 - Stops are listed **without a `parent_station`** (subway: 496 stations, not 1488 platforms). `stop_times` only reference platforms, so a station's `routes` are the union of its children's.
 - `wheelchairAccessible` is populated from `wheelchair_boarding` (LIRR only) — `1`→`true`, `2`→`false`, `0`/absent→**omitted**, never `false`. The spec's subway example shows `true`, but no subway/bus feed carries the field.
-- 977 stop ids repeat across feeds (subway vs LIRR numeric ids). `GET /v1/stops/:id` has no `agency` param, so feeds are searched in `AGENCY_IDS` order — subway wins.
-- Schedule: service days = `calendar` weekday row ∪ `calendar_dates` `exception_type='1'`, minus `exception_type='2'`. LIRR ships no `calendar` — `CALENDAR_FREE_FEEDS` is derived from `AgencyTableMap`, so naming a table the feed lacks fails at compile time. `direction` comes from the trip shape's first/last point; `trips.direction_id` means nothing portable across feeds.
+- 977 stop ids repeat across feeds (subway vs LIRR numeric ids). `GET /v1/stops/:id` has no `agency` param, so feeds are searched in `AGENCY_IDS` order — subway wins. `resolveStop` searches sequentially (not `Promise.all`) so a hit in an early feed loads one stop index, not all eight.
+- Schedule: service days = `calendar` weekday row ∪ `calendar_dates` `exception_type='1'`, minus `exception_type='2'` (`activeServices()` in `services/stops.ts`, shared by schedule and journey). LIRR ships no `calendar` — `CALENDAR_FREE_FEEDS` is derived from `AgencyTableMap`, so naming a table the feed lacks fails at compile time. `direction` comes from the trip shape's first/last point; `trips.direction_id` means nothing portable across feeds.
+- Journey (`GET /v1/journey?from=&to=&date=&time=`): static-timetable earliest-arrival planner, **two legs max** (direct + one transfer), top 5 by arrival. Transfers match at station level (platforms of one station are one point; 60s buffer); cross-feed transfers are stations ≤500m apart (420s buffer) — GTFS ships no cross-feed transfer table, and stop ids repeat across feeds, so ids are never matched across feeds, only coordinates. Starting _at_ a co-located station (subway 34 St-Penn to LIRR Penn) plans a walk-only start; its `departureTime` is the query time, so `durationMinutes` includes the walk.
+- Fares (`GET /v1/fares?agency=`): MTA ships **no fare tables in any GTFS zip** (verified 2026-09-26), so `services/fares.ts` is a curated constant table from mta.info/fares-tolls (2026-01-04 prices: base $3, reduced $1.50, express $7.25, CityTicket $5.25/$7.25). Update it when MTA revises fares.
+- New error codes beyond the spec: `INVALID_LOCATION` (stops proximity params), `MISSING_FROM`/`MISSING_TO`/`INVALID_TIME` (journey). Unknown from/to reuse `STOP_NOT_FOUND` (404).
 
 ## Lint (xo 2.0.2) — write to these, don't fix up after
 
@@ -130,6 +137,13 @@ Realtime:
 - [x] `GET /v1/arrivals?stop=&route=` (GTFS-RT trip updates, subway/LIRR/bus)
 - [x] `GET /v1/vehicles?route=&agency=`
 - [x] `GET /v1/alerts?agency=&route=`
+
+Phase 3:
+
+- [x] `GET /v1/stops?lat=&lng=&radius=` (proximity, distance-sorted, `distance` field)
+- [x] `GET /v1/journey?from=&to=&date=&time=` (schedule-based, 2 legs max)
+- [x] `GET /v1/fares?agency=` (curated; no GTFS fare data exists)
+- [x] Hourly static refresh (`setInterval` in `src/index.ts`), 15s realtime TTL cache
 
 ## Git
 

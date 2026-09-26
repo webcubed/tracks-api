@@ -5,6 +5,7 @@ import type {
 	FeedStopTimeUpdate,
 	FeedTripUpdate,
 } from "@/types/realtime";
+import { clockSeconds } from "@/lib/time";
 import { fetchRealtime, isoNewYork, lookupTrips } from "@/services/realtime";
 import {
 	directionIndex,
@@ -45,7 +46,7 @@ type Candidate = {
 /**
  * Live arrivals at a stop: GTFS-RT trip updates filtered to its ids
  * (platforms included), with headsign, route and direction filled in from
- * static GTFS — none of which the real-time feed carries. Real-time subway
+ * static GTFS, none of which the real-time feed carries. Real-time subway
  * trip ids aren't in static GTFS at all, so those candidates are matched
  * against today's schedule instead.
  */
@@ -113,7 +114,7 @@ type Rider = { id?: string; occupancy?: string };
 
 /**
  * One entry per stop time ahead at this stop, plus the vehicle running each
- * trip — occupancy and identity live on the vehicle feed, not the trip update.
+ * trip: occupancy and identity live on the vehicle feed, not the trip update.
  */
 function scan(
 	entities: readonly FeedEntity[],
@@ -147,7 +148,7 @@ function scan(
 	return { candidates, riders };
 }
 
-/** One stop time ahead at this stop — or nothing. */
+/** One stop time ahead at this stop, or nothing. */
 function candidate(
 	update: FeedTripUpdate,
 	stu: FeedStopTimeUpdate,
@@ -164,7 +165,7 @@ function candidate(
 	return { epoch, tripId, feedRouteId: update.trip?.routeId, stu, update };
 }
 
-/** Schedule deviation in seconds — feeds carry it in three places. */
+/** Schedule deviation in seconds; feeds carry it in three places. */
 function delayOf(candidate: Candidate): number {
 	return (
 		candidate.stu.arrival?.delay ??
@@ -194,8 +195,8 @@ function cardinalOf(
 
 /**
  * The scheduled departure running as this realtime arrival: same route and
- * direction, nearest within four minutes once its delay is subtracted — the
- * gap absorbs platform dwell and feeds reporting delay 0 while late. This is
+ * direction, nearest within four minutes once its delay is subtracted (the
+ * gap absorbs platform dwell and feeds reporting delay 0 while late). This is
  * how subway trips get a headsign: their real-time ids aren't in static GTFS.
  */
 function matchDeparture(
@@ -224,13 +225,6 @@ function matchDeparture(
 	}
 
 	return bestDiff <= 240 ? best : undefined;
-}
-
-/** Seconds since midnight — schedule times run past 24:00 for late service. */
-function clockSeconds(clock: string): number {
-	const [hours = 0, minutes = 0, seconds = 0] = clock.split(":").map(Number);
-
-	return hours * 3600 + minutes * 60 + seconds;
 }
 
 /** Distance between two clock readings, wrapping at midnight. */
