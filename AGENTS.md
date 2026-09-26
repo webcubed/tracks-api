@@ -28,6 +28,10 @@ pnpm exec tsx src/index.ts   # no watch; server on :3000
 pnpm lint                # xo (see "Lint" below)
 pnpm exec tsc --noEmit   # typecheck — run with lint, always
 pnpm exec prettier --write <files>
+
+# ad-hoc data exploration (throwaway-ish but lint-clean, keep them working):
+pnpm exec tsx scripts/schema.ts                                   # per-feed column matrix
+pnpm exec tsx scripts/sql.ts <agency> <table> "<sql with {{url}}>" # query one parquet file
 ```
 
 No test framework. **Testing means: boot the server, curl every route you touched, check status + shape.** Do it the moment a feature lands, before committing.
@@ -68,6 +72,10 @@ src/
 - Promise-memoize any lazy singleton (`db.ts`, `loadTable`). A `let loaded = false` guard does **not** dedupe in-flight work — that bug shipped once already.
 - Agency IDs in URLs are **feed keys** (`subway`, `lirr`, `bus_bx`, `bus_b`, `bus_busco`, `bus_m`, `bus_si`, `bus_q`), never GTFS `agency_id` (`MTA NYCT`, `LI`). `AgencyId` ← `AGENCY_IDS`; `AgencyTableMap` is mapped from `AgencyId`.
 - `routes.txt` lists all 307 MTA bus routes in every borough feed, but each feed's `trips` only covers its own subset (Brooklyn: 68). Filter routes through `trips`, or `GET /v1/routes?agency=bus_m` returns Brooklyn routes too.
+- **Feed schemas differ** — subway `stops` has no `wheelchair_boarding`, LIRR `routes` has no `route_short_name`, LIRR and `bus_busco` have no `location_type`/`parent_station`. Run `pnpm exec tsx scripts/schema.ts` for the per-feed column matrix before assuming a column exists.
+- Stops are listed **without a `parent_station`** (subway: 496 stations, not 1488 platforms). `stop_times` only reference platforms, so a station's `routes` are the union of its children's.
+- `wheelchairAccessible` is populated from `wheelchair_boarding` (LIRR only) — `1`→`true`, `2`→`false`, `0`/absent→**omitted**, never `false`. The spec's subway example shows `true`, but no subway/bus feed carries the field.
+- 977 stop ids repeat across feeds (subway vs LIRR numeric ids). `GET /v1/stops/:id` has no `agency` param, so feeds are searched in `AGENCY_IDS` order — subway wins.
 
 ## Lint (xo 2.0.2) — write to these, don't fix up after
 
@@ -106,7 +114,8 @@ Static:
 
 - [x] `GET /v1/agencies`, `GET /v1/agencies/:id`
 - [x] `GET /v1/routes?agency=`, `GET /v1/routes/:id?agency=` (with `shape` GeoJSON from `shapes`)
-- [ ] `GET /v1/stops?agency=&route=`, `GET /v1/stops/:id`, `GET /v1/stops/:id/schedule?date=`
+- [x] `GET /v1/stops?agency=&route=`, `GET /v1/stops/:id`
+- [ ] `GET /v1/stops/:id/schedule?date=`
 
 Realtime:
 
