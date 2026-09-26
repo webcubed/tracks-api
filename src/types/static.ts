@@ -2,14 +2,14 @@
  * GTFS row shapes as `queryTable` / `loadTable` return them.
  *
  * Every parquet column is VARCHAR (`scripts/convert.ts` reads the CSVs with
- * `all_varchar=true`), so numeric GTFS fields — `stop_lat`, `route_type`,
- * `direction_id`, `exception_type`, `stop_sequence` — all arrive as strings.
+ * `all_varchar=true`), so numeric GTFS fields (`stop_lat`, `route_type`,
+ * `direction_id`, `exception_type`, `stop_sequence`) all arrive as strings.
  * Convert with `Number(...)` where the API wants a number.
  *
  * A NULL cell comes back as `null`, not `undefined`: test with `typeof`, never
  * `=== null` (xo also bans `null` as a type).
  *
- * Fields marked `?` are missing from some feeds' schemas altogether — run
+ * Fields marked `?` are missing from some feeds' schemas altogether; run
  * `pnpm exec tsx scripts/schema.ts` for the full per-feed matrix.
  */
 
@@ -29,7 +29,7 @@ export type CalendarDates = {
 };
 
 export type Calendar = {
-	// Absent from LIRR and bus_busco — those feeds carry calendar_dates only.
+	// Absent from LIRR and bus_busco; those feeds carry calendar_dates only.
 	service_id: string;
 	monday: string; // "0" | "1"
 	tuesday: string;
@@ -68,7 +68,7 @@ export type Routes = {
 
 export type Shapes = {
 	shape_id: string;
-	shape_pt_sequence: string; // "0", "1", … — cast before sorting
+	shape_pt_sequence: string; // "0", "1", ...; cast before sorting
 	shape_pt_lat: string; // decimal degrees
 	shape_pt_lon: string;
 };
@@ -93,8 +93,8 @@ export type Stops = {
 	stop_lon: string;
 	zone_id?: string;
 	stop_url?: string;
-	wheelchair_boarding?: string; // LIRR only — "0" | "1" | "2"
-	location_type?: string; // "0" stop, "1" station — absent from LIRR and bus_busco
+	wheelchair_boarding?: string; // LIRR only: "0" | "1" | "2"
+	location_type?: string; // "0" stop, "1" station; absent from LIRR and bus_busco
 	parent_station?: string; // set on platforms; absent from LIRR and bus_busco
 };
 

@@ -14,6 +14,7 @@ const reader = await runQuery<Record<string, unknown>>(
 	sql.replaceAll(
 		"{{url}}",
 		getStaticFeedUrl(
+			// Raw argv: the shell user vouches for these feed and table names.
 			// eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
 			agency as keyof AgencyTableMap,
 			// eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion

@@ -14,7 +14,7 @@ export type ApiAgency = {
 let cache: ApiAgency[];
 
 /**
- * One entry per feed (8), not per GTFS `agency` row — all six bus feeds share
+ * One entry per feed (8), not per GTFS `agency` row: all six bus feeds share
  * a single `MTABC` row, so the raw table only distinguishes three operators.
  */
 async function loadAgencies(): Promise<ApiAgency[]> {

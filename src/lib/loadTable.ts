@@ -19,6 +19,8 @@ export async function loadTable<
 	A extends AgencyId,
 	T extends AgencyTableMap[A],
 >(agency: A, table: T): Promise<Array<TableMap[T]>> {
+	// The shared loader is typed over the union of every feed's tables; this
+	// narrows it to the table the caller actually named.
 	// eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
 	return load(agency, table) as Promise<Array<TableMap[T]>>;
 }

@@ -83,7 +83,7 @@ export const REALTIME_FEEDS = {
 /**
  * Subway cluster endpoints carrying `routes` (one request instead of all
  * eight). The route lists cover every route the static subway feed ships; if
- * nothing matches — data newer than this table — fall back to all clusters
+ * nothing matches (data newer than this table), fall back to all clusters
  * rather than return an empty board.
  */
 export function subwayFeedUrls(routes: readonly string[]): string[] {
@@ -115,7 +115,7 @@ export const AGENCY_IDS = [
 	"bus_q",
 ] as const;
 
-/** Feed ids are what `/v1` URLs use as `agency` — never the GTFS `agency_id`. */
+/** Feed ids are what `/v1` URLs use as `agency`, never the GTFS `agency_id`. */
 export type AgencyId = (typeof AGENCY_IDS)[number];
 export type AgencyMode = "subway" | "rail" | "bus";
 
@@ -149,7 +149,7 @@ type AllTables =
 type BusTables = Exclude<AllTables, "transfers">;
 type LirrTables = Exclude<AllTables, "calendar">;
 
-/** Which GTFS tables each feed ships — derived from `AgencyId` so the two can't drift. */
+/** Which GTFS tables each feed ships; derived from `AgencyId` so the two can't drift. */
 export type AgencyTableMap = {
 	[K in AgencyId]: K extends "subway"
 		? AllTables
@@ -159,7 +159,7 @@ export type AgencyTableMap = {
 };
 
 /**
- * Feeds with no `calendar.txt` — their service days come from `calendar_dates`
+ * Feeds with no `calendar.txt`; their service days come from `calendar_dates`
  * alone. Derived from `AgencyTableMap`, so querying a file the feed doesn't
  * ship can't creep in unnoticed.
  */

@@ -1,6 +1,6 @@
 /**
  * Decoded real-time payloads. Field names are camelCase because protobufjs
- * decodes with `keepCase: false`; everything is optional — feeds omit fields
+ * decodes with `keepCase: false`; everything is optional: feeds omit fields
  * freely (subway vehicles carry no coordinates, bus trip updates carry no
  * occupancy).
  */
@@ -67,7 +67,7 @@ export type FeedMessage = {
 
 /**
  * Mercury service alerts, read from the `.json` twin of the protobuf feed
- * (`camsys/*-alerts.json`) — same payload, and it skips a second protobuf root
+ * (`camsys/*-alerts.json`): same payload, and it skips a second protobuf root
  * (the Mercury extension claims field 1001 on FeedHeader, which NYCT already
  * uses). Keys stay snake_case: the JSON endpoint only camelCases extensions.
  */

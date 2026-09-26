@@ -33,7 +33,7 @@ type TripIndex = {
 };
 
 /**
- * Per feed: which routes have trips, plus one representative polyline each —
+ * Per feed: which routes have trips, plus one representative polyline each:
  * the most-used `shape_id` (routes run several variants: local/express,
  * different terminals, and the spec shows a single LineString per route).
  *

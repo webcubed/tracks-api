@@ -37,7 +37,7 @@ async function feedForRoute(
 	return feeds.find((feed) => feed !== undefined);
 }
 
-/** First stop ahead of `now` — trip updates list stops in travel order. */
+/** First stop ahead of `now`; trip updates list stops in travel order. */
 function nextStopAhead(
 	update: FeedTripUpdate | undefined,
 	now: number
@@ -65,7 +65,7 @@ export async function getVehicles(
 	const entities = await fetchRealtime(feed, [route]);
 	const now = Date.now() / 1000;
 
-	// Next stop ahead for each trip, once per trip.
+	// Next stop ahead for each trip.
 	const ahead = new Map<string, string>();
 	for (const entity of entities) {
 		const update = entity.tripUpdate;
@@ -101,7 +101,7 @@ export async function getVehicles(
 	);
 
 	// Every stop the response may name: current (subway vehicles report no
-	// coordinates — the platform they stand on is the closest real position)
+	// coordinates; the platform they stand on is the closest real position)
 	// and next.
 	const stopIds = new Set<string>();
 	for (const { entity, tripId } of matched) {

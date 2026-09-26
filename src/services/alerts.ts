@@ -38,7 +38,7 @@ export type ApiAlert = {
  * Mercury's `agency_id` → the feeds that can carry it, verified against all
  * 1806 informed entities on 2026-09-26: MTASBWY routes are all subway, and
  * "MTA NYCT" routes are all borough bus (their static `agency_id` is MTANYCT,
- * shared with subway — the route settles which feed). MTABC is MTA Bus Company
+ * shared with subway, so the route settles which feed). MTABC is MTA Bus Company
  * = bus_busco. Metro-North has no static feed here, so its alerts drop.
  */
 const AGENCY_FEEDS: Record<string, readonly AgencyId[] | undefined> = {
@@ -50,7 +50,7 @@ const AGENCY_FEEDS: Record<string, readonly AgencyId[] | undefined> = {
 };
 
 /**
- * `alert_type` is the only classification Mercury publishes — GTFS-RT's
+ * `alert_type` is the only classification Mercury publishes: GTFS-RT's
  * `cause`, `effect` and `severity` are never set. Suspended service reads
  * worst, delays and detours next, planned modifications below that, notices
  * and extra service lowest.
@@ -85,7 +85,7 @@ const ALERT_TYPES: Record<
 
 const DEFAULT_KIND = { severity: "medium", effect: "other" } as const;
 
-/** The English translation — feeds also ship an `en-html` variant. */
+/** The English translation; feeds also ship an `en-html` variant. */
 function text(value: MercuryText | undefined): string {
 	const translations = value?.translation ?? [];
 
@@ -193,7 +193,7 @@ async function toApiAlert(
 
 /**
  * Service alerts for every mode, one fetch of the shared Mercury feed.
- * Metro-North alerts are dropped — no static data backs them here.
+ * Metro-North alerts are dropped: no static data backs them here.
  */
 export async function getAlerts(
 	agency?: AgencyId,

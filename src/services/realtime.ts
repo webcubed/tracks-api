@@ -19,7 +19,7 @@ const NEW_YORK = "America/New_York";
 
 /**
  * One root for trip/vehicle feeds: the core spec plus the NYCT and railroad
- * extensions. Mercury can't join — it reuses field 1001 on FeedHeader — and
+ * extensions. Mercury can't join it (it reuses field 1001 on FeedHeader), and
  * alerts are read as JSON anyway (`@/types/realtime`).
  */
 const feedMessage = memoize(async () => {

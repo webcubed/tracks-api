@@ -19,6 +19,7 @@ for (const feed of feeds) {
 	const files = fs.readdirSync(currentPath);
 	for (const file of files) {
 		const fileName = path.parse(file).name;
+		// One COPY at a time keeps memory flat; stop_times is the big one.
 		// eslint-disable-next-line no-await-in-loop
 		await connection.run(`
 	COPY (

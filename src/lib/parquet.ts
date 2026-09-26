@@ -5,7 +5,7 @@ import { getDb } from "@/db";
 
 /**
  * Raw SQL against the in-memory DuckDB instance. Values interpolate via `?`
- * placeholders — never splice user input into `sql`.
+ * placeholders; never splice user input into `sql`.
  */
 export async function runQuery<T>(
 	sql: string,
@@ -15,6 +15,8 @@ export async function runQuery<T>(
 	const reader = await db.runAndReadAll(sql, parameters);
 	await reader.readAll();
 	const rows = reader.getRowObjectsJS() as unknown;
+	// DuckDB's row type carries nothing the compiler can check against; `T`
+	// is the caller's claim about the SELECT.
 	// eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
 	return rows as T[];
 }
