@@ -7,4 +7,4 @@ gtfs/
 data/raw/*
 data/extracted/*
 !data/raw/.gitkeep
-!data/extracted/.gitkeep
+!data/extracted/.gitkeeptsconfig.tsbuildinfo
