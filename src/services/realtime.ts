@@ -41,9 +41,17 @@ const feedMessage = memoize(async () => {
 	return root.lookupType("transit_realtime.FeedMessage");
 });
 
-/** Fresh fetch + decode of one GTFS-RT endpoint. */
-export async function fetchFeed(url: string): Promise<FeedEntity[]> {
-	const response = await fetch(url, { signal: AbortSignal.timeout(15_000) });
+/**
+ * Realtime responses share one upstream fetch for this long. The spec allows
+ * 15-30s; feeds update every 30s, so the worst case is one update behind.
+ * Failures are never cached (memoize evicts rejected entries itself).
+ */
+export const FEED_TTL_MS = 15_000;
+
+export const fetchFeed = memoize(async (url: string): Promise<FeedEntity[]> => {
+	const response = await fetch(url, {
+		signal: AbortSignal.timeout(15_000),
+	});
 
 	if (!response.ok) {
 		throw new FeedError(`${url} responded ${response.status}`);
@@ -59,7 +67,7 @@ export async function fetchFeed(url: string): Promise<FeedEntity[]> {
 	}) as FeedMessage;
 
 	return message.entity ?? [];
-}
+}, FEED_TTL_MS);
 
 function feedUrls(
 	agency: AgencyId,

@@ -7,7 +7,8 @@ import type {
 	MercuryText,
 } from "@/types/realtime";
 import { REALTIME_FEEDS } from "@/constants";
-import { FeedError, isoNewYork } from "@/services/realtime";
+import { memoize } from "@/lib/memoize";
+import { FEED_TTL_MS, FeedError, isoNewYork } from "@/services/realtime";
 import { getRoute } from "@/services/routes";
 
 export type AlertSeverity = "low" | "medium" | "high" | "critical";
@@ -129,7 +130,11 @@ async function feedForAlert(
 	return matches.find((feed) => feed !== undefined) ?? feeds[0];
 }
 
-async function fetchAlerts(): Promise<MercuryEntity[]> {
+/**
+ * One fetch of the shared Mercury feed per TTL window (same window as
+ * `fetchFeed`); agency/route filtering happens after, in TypeScript.
+ */
+const fetchAlerts = memoize(async (): Promise<MercuryEntity[]> => {
 	const response = await fetch(REALTIME_FEEDS.ALERTS.JSON.ALL, {
 		signal: AbortSignal.timeout(15_000),
 	});
@@ -138,11 +143,13 @@ async function fetchAlerts(): Promise<MercuryEntity[]> {
 		throw new FeedError(`alerts feed responded ${response.status}`);
 	}
 
+	// Mercury ships no schema; `MercuryFeed` is hand-trimmed from the live
+	// JSON, so the assertion can't be checked by the compiler.
 	// eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
 	const feed = (await response.json()) as MercuryFeed;
 
 	return feed.entity ?? [];
-}
+}, FEED_TTL_MS);
 
 async function toApiAlert(
 	entity: MercuryEntity,
