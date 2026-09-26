@@ -4,21 +4,26 @@ REST API for NYC transit (subway, LIRR, bus). TypeScript + Hono + DuckDB (in-mem
 
 ## Read these first
 
-| Doc                                          | Path                                                    |
-| -------------------------------------------- | ------------------------------------------------------- |
-| API spec (authoritative for response shapes) | `~/Documents/Obsidian Vault/tracks-api-design.md`       |
-| Data sources / proto reference               | `~/Documents/Obsidian Vault/tracks-api-data-sources.md` |
-| MTA production API outlines (fallback data)  | `~/Documents/Obsidian Vault/progaming/MTA project/*.md` |
+| Doc                                           | Path                                                    |
+| --------------------------------------------- | ------------------------------------------------------- |
+| API spec (authoritative for response shapes)  | `~/Documents/Obsidian Vault/tracks-api-design.md`       |
+| Data sources / proto reference                | `~/Documents/Obsidian Vault/tracks-api-data-sources.md` |
+| MTA project notes (feeds, protos, app design) | `~/Documents/Obsidian Vault/progaming/MTA project/`     |
 
 The two `tracks-api-*.md` files **are** the spec. Match response shapes, query params, enum values and error codes exactly. Where the spec shows example JSON, prefer it over whatever the raw GTFS table gives you.
 
-Fallback (non-GTFS) APIs, in `~/Documents/Obsidian Vault/progaming/MTA project/`:
+The MTA project folder (`~/Documents/Obsidian Vault/progaming/MTA project/`) is assorted reference notes — most of it useful, not fallback data:
+
+- `gtfs tutorial.md` — the map of the data landscape: official static GTFS zips (regular + `gtfs_supplemented.zip` for the next 7 days of service changes), realtime feed URLs, protobuf sources, links to MTA structure docs. No API key needed for realtime.
+- `Outline.md`, `what i need.md`, `working.md` — app-side design notes (proximity notifications, per-mode pages), context only.
+
+Fallback (non-GTFS) APIs — only these three docs are fallback data sources:
 
 - `mta radar production api.md` — LIRR `/locations`, `/countdown/{station}`, `/status`, Solari board, health. Has track assignment, per-section delay, actual vs scheduled track. Use only when GTFS/GTFS-RT can't answer.
 - `mta.info production api.md` — OTP `nearby` endpoint (walk distance + arrivals around a point).
 - `MTA Bustime Api documentation.md` — SIRI/OBA stop monitoring.
 
-These are undocumented, unstable production APIs. GTFS first, fallback second.
+These fallbacks are undocumented, unstable production APIs. GTFS first, fallback second.
 
 ## Commands
 

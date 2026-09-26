@@ -2,18 +2,18 @@
 	"name": "tracks-api",
 	"version": "1.0.0",
 	"author": "",
+	"type": "module",
 	"description": "",
 	"keywords": [],
 	"license": "ISC",
 	"main": "index.js",
-	"type": "module",
 	"scripts": {
-		"format": "prettier --write .",
-		"dev": "tsx watch --env-file=.env src/index.ts",
-		"start": "tsx src/index.ts",
 		"convert": "tsx scripts/convert.ts",
+		"dev": "tsx watch --env-file=.env src/index.ts",
+		"format": "prettier --write .",
 		"lint": "xo .",
-		"lint:fix": "xo --fix"
+		"lint:fix": "xo --fix",
+		"start": "tsx src/index.ts"
 	},
 	"dependencies": {
 		"@duckdb/duckdb-wasm": "1.33.1-dev45.0",
