@@ -67,7 +67,7 @@ export const AGENCIES = {
 	MANHATTAN: "bus_m",
 	SI: "bus_si",
 	QUEENS: "bus_q",
-};
+} as const;
 
 type AllTables =
 	| "agency"

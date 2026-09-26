@@ -1,6 +1,4 @@
-import type { AgencyTableMap } from "@/constants";
-import { AGENCIES } from "@/constants";
-import { queryTable } from "@/lib/parquet";
+import { loadTable } from "@/lib/loadTable";
 import { type Agency } from "@/types/static";
 
 export type ApiAgency = {
@@ -9,8 +7,7 @@ export type ApiAgency = {
 	url: string;
 	timezone: string;
 };
-const cache = new Map<string, ApiAgency>();
-let loaded = false;
+
 function toApi(row: Agency): ApiAgency {
 	return {
 		id: row.agency_id,
@@ -20,32 +17,23 @@ function toApi(row: Agency): ApiAgency {
 	};
 }
 
-async function load(): Promise<void> {
-	if (loaded) return;
+let index: Map<string, ApiAgency>;
 
-	// eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
-	const agencyKeys = Object.values(AGENCIES) as unknown as Array<
-		keyof AgencyTableMap
-	>;
-
-	const promises = agencyKeys.map(async (a) => queryTable(a, "agency"));
-	const results = await Promise.all(promises);
-
-	for (const rows of results) {
-		for (const row of rows) {
-			cache.set(row.agency_id, toApi(row));
-		}
+async function byId(): Promise<Map<string, ApiAgency>> {
+	if (!index) {
+		const rows = await loadTable("agency");
+		index = new Map(rows.map((row) => [row.agency_id, toApi(row)]));
 	}
 
-	loaded = true;
+	return index;
 }
 
-export async function getAgencies() {
-	await load();
-	return [...cache.values()];
+export async function getAgencies(): Promise<ApiAgency[]> {
+	const agencies = await byId();
+	return [...agencies.values()];
 }
 
 export async function getAgency(id: string): Promise<ApiAgency | undefined> {
-	await load();
-	return cache.get(id);
+	const agencies = await byId();
+	return agencies.get(id);
 }

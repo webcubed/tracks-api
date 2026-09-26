@@ -1,6 +1,7 @@
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { loadTable } from "./lib/loadTable";
 import { v1 } from "./v1";
 
 const app = new Hono();
@@ -8,6 +9,8 @@ const app = new Hono();
 app.use("*", cors());
 app.get("/", (context) => context.text("ok"));
 app.route("v1", v1);
+
+await Promise.all([loadTable("agency"), loadTable("routes")]);
 
 serve({
 	fetch: app.fetch,
