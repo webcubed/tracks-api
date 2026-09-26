@@ -1,6 +1,6 @@
 import type { AgencyId } from "@/constants";
 import { isAgencyId } from "@/constants";
-import { getSchedule, getStop, getStops } from "@/services/stops";
+import { getSchedule, getStop, getStops, today } from "@/services/stops";
 import { Hono } from "hono";
 
 export const stops = new Hono();
@@ -82,13 +82,6 @@ stops.get("/:id", async (c) => {
 
 	return c.json({ data: stop });
 });
-
-/** Today in the service's own timezone, not the server's. */
-function today(): string {
-	return new Intl.DateTimeFormat("en-CA", {
-		timeZone: "America/New_York",
-	}).format(new Date());
-}
 
 /**
  * Strict `YYYY-MM-DD`: parse it, then check the round trip. Rejects

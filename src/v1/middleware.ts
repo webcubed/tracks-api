@@ -40,3 +40,31 @@ export const requireAgency = createMiddleware<{
 	c.set("agency", agency);
 	return next();
 });
+
+/**
+ * Optional `?agency=`: unset stays unset (`c.get("agency")` is `undefined`),
+ * an id that isn't a feed is 404, same wording as `requireAgency`.
+ */
+export const optionalAgency = createMiddleware<{
+	Variables: { agency?: AgencyId };
+}>(async (c, next) => {
+	const query = c.req.query("agency");
+
+	if (query) {
+		if (!isAgencyId(query)) {
+			return c.json(
+				{
+					error: {
+						code: "AGENCY_NOT_FOUND",
+						message: `No agency found with id '${query}'`,
+					},
+				},
+				404
+			);
+		}
+
+		c.set("agency", query);
+	}
+
+	return next();
+});

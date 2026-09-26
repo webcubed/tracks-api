@@ -164,6 +164,59 @@ export async function getStop(id: string): Promise<ApiStop | undefined> {
 	return toApi(resolved.agency, resolved.row, resolved.index.routes.get(id));
 }
 
+/**
+ * What `/v1/arrivals` needs from a stop: its response object, and every id a
+ * feed may reference it by (GTFS-RT names platforms — `127N`, `127S`).
+ */
+export async function resolveStopIds(
+	id: string
+): Promise<{ agency: AgencyId; stop: ApiStop; ids: string[] } | undefined> {
+	const resolved = await resolveStop(id);
+	if (!resolved) return undefined;
+
+	const { agency, index, row } = resolved;
+
+	return {
+		agency,
+		stop: toApi(agency, row, index.routes.get(row.stop_id)),
+		ids: [row.stop_id, ...childIds(index, row.stop_id)],
+	};
+}
+
+export type StopRef = {
+	id: string;
+	name: string;
+	location?: { lat: number; lng: number };
+};
+
+/**
+ * Label for a stop id a real-time feed mentions: platforms resolve to their
+ * station — the spec's `nextStopId: "125"` / `nextStop: "72 St"` — and the
+ * station's coordinates stand in for a vehicle that reports no position.
+ */
+export async function getStopRef(
+	agency: AgencyId,
+	stopId: string
+): Promise<StopRef | undefined> {
+	const index = await stopIndex(agency);
+	const row = index.byId.get(stopId);
+	if (!row) return undefined;
+
+	const parent = row.parent_station
+		? index.byId.get(row.parent_station)
+		: undefined;
+	const target = parent ?? row;
+	const lat = Number(target.stop_lat);
+	const lng = Number(target.stop_lon);
+
+	return {
+		id: target.stop_id,
+		name: target.stop_name,
+		location:
+			Number.isFinite(lat) && Number.isFinite(lng) ? { lat, lng } : undefined,
+	};
+}
+
 export type Departure = {
 	route: string;
 	headsign: string;
@@ -210,7 +263,7 @@ const WEEKDAYS = [
  * nothing portable across feeds (subway, LIRR and bus number it differently);
  * the geometry is the same fact for all of them.
  */
-const directionIndex = memoize(async (agency: AgencyId) => {
+export const directionIndex = memoize(async (agency: AgencyId) => {
 	const shapesUrl = getStaticFeedUrl(agency, "shapes");
 	const rows = await runQuery<ShapeEnds>(
 		`SELECT shape_id,
@@ -247,6 +300,13 @@ function childIds(index: FeedStops, parentId: string): string[] {
 	}
 
 	return ids;
+}
+
+/** Today in the service's own timezone, not the server's. */
+export function today(): string {
+	return new Intl.DateTimeFormat("en-CA", {
+		timeZone: "America/New_York",
+	}).format(new Date());
 }
 
 /**

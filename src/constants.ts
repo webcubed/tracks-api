@@ -1,16 +1,47 @@
 export const REALTIME_FEEDS = {
-	SUBWAY: {
-		IRT: "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs", // 1,2,3,4,5,6,S
-		ACE: "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-ace",
-		BDFM: "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-bdfm",
-		G: "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-g",
-		JZ: "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-jz",
-		NQRW: "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-nqrw",
-		L: "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-l",
-		SIR: "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-si",
-	},
+	/** Subway clusters: one endpoint per set of lines, each carrying trip updates *and* vehicle positions. */
+	SUBWAY: [
+		{
+			url: "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
+			routes: ["1", "2", "3", "4", "5", "6", "6X", "7", "7X", "GS"],
+		},
+		{
+			url: "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-ace",
+			routes: ["A", "C", "E", "H"],
+		},
+		{
+			url: "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-bdfm",
+			routes: ["B", "D", "F", "FS", "FX", "M"],
+		},
+		{
+			url: "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-g",
+			routes: ["G"],
+		},
+		{
+			url: "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-jz",
+			routes: ["J", "Z"],
+		},
+		{
+			url: "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-nqrw",
+			routes: ["N", "Q", "R", "W"],
+		},
+		{
+			url: "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-l",
+			routes: ["L"],
+		},
+		{
+			url: "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-si",
+			routes: ["SI"],
+		},
+	],
 	LIRR: "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/lirr%2Fgtfs-lirr",
 	MNR: "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/mnr%2Fgtfs-mnr",
+	/** Bus Time is one feed for all five boroughs; trip updates and positions are separate. */
+	BUS: {
+		TRIP_UPDATES: "https://gtfsrt.prod.obanyc.com/tripUpdates?key=OBANYC",
+		VEHICLE_POSITIONS:
+			"https://gtfsrt.prod.obanyc.com/vehiclePositions?key=OBANYC",
+	},
 	ALERTS: {
 		GTFS: {
 			ALL: "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/camsys%2Fall-alerts",
@@ -48,6 +79,21 @@ export const REALTIME_FEEDS = {
 		},
 	},
 } as const;
+
+/**
+ * Subway cluster endpoints carrying `routes` (one request instead of all
+ * eight). The route lists cover every route the static subway feed ships; if
+ * nothing matches — data newer than this table — fall back to all clusters
+ * rather than return an empty board.
+ */
+export function subwayFeedUrls(routes: readonly string[]): string[] {
+	const matched = REALTIME_FEEDS.SUBWAY.filter((feed) =>
+		feed.routes.some((route) => routes.includes(route))
+	);
+	const feeds = matched.length > 0 ? matched : REALTIME_FEEDS.SUBWAY;
+
+	return feeds.map((feed) => feed.url);
+}
 
 export const PROTOBUF_SCHEMAS = {
 	GTFS_REALTIME:
