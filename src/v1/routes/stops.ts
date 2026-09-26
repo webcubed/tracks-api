@@ -1,6 +1,4 @@
-import type { AgencyId } from "@/constants";
 import type { Proximity } from "@/services/stops";
-import { isAgencyId } from "@/constants";
 import {
 	getSchedule,
 	getStop,
@@ -8,31 +6,13 @@ import {
 	isValidDate,
 	today,
 } from "@/services/stops";
+import { optionalAgency } from "@/v1/middleware";
 import { Hono } from "hono";
 
 export const stops = new Hono();
 
-stops.get("/", async (c) => {
+stops.get("/", optionalAgency, async (c) => {
 	const route = c.req.query("route");
-	const raw = c.req.query("agency");
-	let agency: AgencyId | undefined;
-
-	if (raw !== undefined) {
-		if (!isAgencyId(raw)) {
-			return c.json(
-				{
-					error: {
-						code: "AGENCY_NOT_FOUND",
-						message: `No agency found with id '${raw}'`,
-					},
-				},
-				404
-			);
-		}
-
-		agency = raw;
-	}
-
 	const parsed = parseNear(
 		c.req.query("lat"),
 		c.req.query("lon"),
@@ -46,11 +26,11 @@ stops.get("/", async (c) => {
 		);
 	}
 
-	const data = await getStops(agency, route, parsed.near);
+	const data = await getStops(c.get("agency"), route, parsed.near);
 	return c.json({ data });
 });
 
-stops.get("/:id/schedule", async (c) => {
+stops.get("/:id/schedule", optionalAgency, async (c) => {
 	const id = c.req.param("id");
 	const raw = c.req.query("date");
 	const date = raw ?? today();
@@ -67,7 +47,7 @@ stops.get("/:id/schedule", async (c) => {
 		);
 	}
 
-	const schedule = await getSchedule(id, date);
+	const schedule = await getSchedule(id, date, c.get("agency"));
 
 	if (!schedule) {
 		return c.json(
@@ -84,9 +64,9 @@ stops.get("/:id/schedule", async (c) => {
 	return c.json({ data: schedule });
 });
 
-stops.get("/:id", async (c) => {
+stops.get("/:id", optionalAgency, async (c) => {
 	const id = c.req.param("id");
-	const stop = await getStop(id);
+	const stop = await getStop(id, c.get("agency"));
 
 	if (!stop) {
 		return c.json(

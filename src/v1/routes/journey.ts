@@ -1,3 +1,4 @@
+import { isAgencyId } from "@/constants";
 import { planJourney } from "@/services/journey";
 import { isoNewYork } from "@/services/realtime";
 import { isValidDate, resolveStopIds, today } from "@/services/stops";
@@ -60,7 +61,33 @@ journey.get("/", async (c) => {
 		);
 	}
 
-	const from = await resolveStopIds(fromId);
+	const fromAgency = c.req.query("fromAgency");
+	if (fromAgency !== undefined && !isAgencyId(fromAgency)) {
+		return c.json(
+			{
+				error: {
+					code: "AGENCY_NOT_FOUND",
+					message: `No agency found with id '${fromAgency}'`,
+				},
+			},
+			404
+		);
+	}
+
+	const toAgency = c.req.query("toAgency");
+	if (toAgency !== undefined && !isAgencyId(toAgency)) {
+		return c.json(
+			{
+				error: {
+					code: "AGENCY_NOT_FOUND",
+					message: `No agency found with id '${toAgency}'`,
+				},
+			},
+			404
+		);
+	}
+
+	const from = await resolveStopIds(fromId, fromAgency);
 	if (!from) {
 		return c.json(
 			{
@@ -73,7 +100,7 @@ journey.get("/", async (c) => {
 		);
 	}
 
-	const to = await resolveStopIds(toId);
+	const to = await resolveStopIds(toId, toAgency);
 	if (!to) {
 		return c.json(
 			{

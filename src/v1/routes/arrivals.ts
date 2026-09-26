@@ -1,11 +1,12 @@
 import type { ApiArrivals } from "@/services/arrivals";
 import { getArrivals } from "@/services/arrivals";
 import { type ApiResponse } from "@/types/api";
+import { optionalAgency } from "@/v1/middleware";
 import { Hono } from "hono";
 
 export const arrivals = new Hono();
 
-arrivals.get("/", async (c) => {
+arrivals.get("/", optionalAgency, async (c) => {
 	const stop = c.req.query("stop");
 
 	if (!stop) {
@@ -20,7 +21,7 @@ arrivals.get("/", async (c) => {
 		);
 	}
 
-	const data = await getArrivals(stop, c.req.query("route"));
+	const data = await getArrivals(stop, c.req.query("route"), c.get("agency"));
 
 	if (!data) {
 		return c.json(

@@ -6,19 +6,19 @@ Static GTFS data (schedules, routes, stops, shapes) is served from Parquet files
 
 ## Endpoints
 
-| Endpoint                                            | What it gives you                                                                                                                           |
-| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /v1/agencies` · `/v1/agencies/:id`             | The eight feed keys (`subway`, `lirr`, and six borough bus feeds) with name, URL, timezone, and modes                                       |
-| `GET /v1/routes?agency=` · `/v1/routes/:id?agency=` | Routes per feed, with official colors and a GeoJSON `shape` per route                                                                       |
-| `GET /v1/stops?agency=&route=`                      | Stops, optionally filtered to a route, with the routes serving each stop                                                                    |
-| `GET /v1/stops?lat=&lon=&radius=`                   | Stops within a radius (metres), sorted by distance, with a `distance` field                                                                 |
-| `GET /v1/stops/:id`                                 | One stop's detail; feeds are searched in a fixed order, subway first                                                                        |
-| `GET /v1/stops/:id/schedule?date=`                  | Scheduled departures for a date (defaults to today), service-day exceptions applied                                                         |
-| `GET /v1/arrivals?stop=&route=`                     | Live arrivals from GTFS-RT trip updates: delay-aware, with headsign, direction, occupancy, and vehicle id                                   |
-| `GET /v1/vehicles?route=&agency=`                   | Live vehicle positions, bearing, speed, next stop                                                                                           |
-| `GET /v1/alerts?agency=&route=`                     | Service alerts with severity, effect, and active periods                                                                                    |
-| `GET /v1/fares?agency=`                             | Current fares per agency (base, reduced, express, CityTicket)                                                                               |
-| `GET /v1/journey?from=&to=&date=&time=`             | Earliest-arrival itineraries on the static timetable: direct rides, one-transfer combinations, and walk connections between nearby stations |
+| Endpoint                                                      | What it gives you                                                                                                                                                                                   |
+| ------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /v1/agencies` · `/v1/agencies/:id`                       | The eight feed keys (`subway`, `lirr`, and six borough bus feeds) with name, URL, timezone, and modes                                                                                               |
+| `GET /v1/routes?agency=` · `/v1/routes/:id?agency=`           | Routes per feed, with official colors and a GeoJSON `shape` per route                                                                                                                               |
+| `GET /v1/stops?agency=&route=`                                | Stops, optionally filtered to a route, with the routes serving each stop                                                                                                                            |
+| `GET /v1/stops?lat=&lon=&radius=`                             | Stops within a radius (metres), sorted by distance, with a `distance` field                                                                                                                         |
+| `GET /v1/stops/:id`                                           | One stop's detail; feeds are searched in a fixed order, subway first (`?agency=` pins one feed: LIRR's Penn Station is `237?agency=lirr`)                                                           |
+| `GET /v1/stops/:id/schedule?date=`                            | Scheduled departures for a date (defaults to today), service-day exceptions applied (`?agency=` as above)                                                                                           |
+| `GET /v1/arrivals?stop=&route=&agency=`                       | Live arrivals from GTFS-RT trip updates: delay-aware, with headsign, direction, occupancy, and vehicle id (`agency` pins the stop's feed)                                                           |
+| `GET /v1/vehicles?route=&agency=`                             | Live vehicle positions, bearing, speed, next stop                                                                                                                                                   |
+| `GET /v1/alerts?agency=&route=`                               | Service alerts with severity, effect, and active periods                                                                                                                                            |
+| `GET /v1/fares?agency=`                                       | Current fares per agency (base, reduced, express, CityTicket)                                                                                                                                       |
+| `GET /v1/journey?from=&to=&date=&time=&fromAgency=&toAgency=` | Earliest-arrival itineraries on the static timetable: direct rides, one-transfer combinations, and walk connections between nearby stations (`fromAgency`/`toAgency` pin the feed for shadowed ids) |
 
 Every response uses the same envelope: `{"data": …}` on success, `{"error": {"code", "message"}}` on failure. Errors are `MISSING_*` (400) for absent required params, `INVALID_DATE` / `INVALID_TIME` / `INVALID_LOCATION` (400) for malformed ones, `*_NOT_FOUND` (404) for unknown ids, `FEED_UNAVAILABLE` (502) when an upstream is down, and `INTERNAL_ERROR` (500) for anything else.
 
@@ -38,6 +38,9 @@ curl -s "localhost:3000/v1/stops?lat=40.75&lon=-73.99&radius=400"
 
 # Times Sq to Jamaica: subway to Penn, walk, LIRR
 curl -s "localhost:3000/v1/journey?from=127&to=102"
+
+# Next trains at LIRR Penn Station (id 237 collides with a subway stop, so pin the feed)
+curl -s "localhost:3000/v1/arrivals?stop=237&agency=lirr"
 ```
 
 First boot downloads every static table plus shape geometry (~13 seconds); the tables are held in memory and refreshed hourly. `stop_times` (millions of rows) is queried per request against the remote Parquet files.

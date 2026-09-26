@@ -52,9 +52,10 @@ type Candidate = {
  */
 export async function getArrivals(
 	stopId: string,
-	route?: string
+	route?: string,
+	feed?: AgencyId
 ): Promise<ApiArrivals | undefined> {
-	const resolved = await resolveStopIds(stopId);
+	const resolved = await resolveStopIds(stopId, feed);
 	if (!resolved) return undefined;
 
 	const { agency, stop, ids } = resolved;

@@ -152,15 +152,21 @@ type ResolvedStop = { agency: AgencyId; index: FeedStops; row: Stops };
 
 /**
  * Stop ids are feed-scoped and 977 of them repeat between subway and LIRR
- * ("127", "101", …), and the spec's `GET /v1/stops/:id` has no `agency` param,
- * so feeds are searched in `AGENCY_IDS` order and the first hit wins: subway
- * first, matching the spec's `stop=127` subway example.
+ * ("127", "101", …), and the spec's `GET /v1/stops/:id` has no `agency` param.
+ * An explicit feed narrows the search to it; otherwise feeds are searched in
+ * `AGENCY_IDS` order and the first hit wins: subway first, matching the spec's
+ * `stop=127` subway example.
  *
  * Sequential rather than Promise.all: a common id (subway) then loads one stop
  * index instead of cold-loading all eight on the first request of a boot.
  */
-async function resolveStop(id: string): Promise<ResolvedStop | undefined> {
-	for (const feed of AGENCY_IDS) {
+async function resolveStop(
+	id: string,
+	agency?: AgencyId
+): Promise<ResolvedStop | undefined> {
+	const feeds = agency ? [agency] : AGENCY_IDS;
+
+	for (const feed of feeds) {
 		// Sequential on purpose: loading only up to the first match is the whole
 		// point of not using Promise.all here, so the awaits are the feature.
 		// eslint-disable-next-line no-await-in-loop
@@ -172,8 +178,13 @@ async function resolveStop(id: string): Promise<ResolvedStop | undefined> {
 	return undefined;
 }
 
-export async function getStop(id: string): Promise<ApiStop | undefined> {
-	const resolved = await resolveStop(id);
+/** With `feed`, resolve the id from that feed alone (an LIRR Penn shadowed by
+ * a colliding subway id becomes reachable). */
+export async function getStop(
+	id: string,
+	feed?: AgencyId
+): Promise<ApiStop | undefined> {
+	const resolved = await resolveStop(id, feed);
 	if (!resolved) return undefined;
 
 	return toApi(resolved.agency, resolved.row, resolved.index.routes.get(id));
@@ -190,9 +201,10 @@ export type ResolvedStopIds = {
  * feed may reference it by (GTFS-RT names platforms, like `127N` and `127S`).
  */
 export async function resolveStopIds(
-	id: string
+	id: string,
+	feed?: AgencyId
 ): Promise<ResolvedStopIds | undefined> {
-	const resolved = await resolveStop(id);
+	const resolved = await resolveStop(id, feed);
 	if (!resolved) return undefined;
 
 	const { agency, index, row } = resolved;
@@ -397,9 +409,10 @@ export function activeServices(
  */
 export async function getSchedule(
 	id: string,
-	date: string
+	date: string,
+	feed?: AgencyId
 ): Promise<ApiSchedule | undefined> {
-	const resolved = await resolveStop(id);
+	const resolved = await resolveStop(id, feed);
 	if (!resolved) return undefined;
 
 	const { agency, index, row } = resolved;
