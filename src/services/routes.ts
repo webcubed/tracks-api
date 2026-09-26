@@ -1,8 +1,9 @@
 import type { AgencyId } from "@/constants";
 import type { Routes } from "@/types/static";
-import { AGENCIES } from "@/constants";
+import { AGENCIES, getStaticFeedUrl } from "@/constants";
 import { loadTable } from "@/lib/loadTable";
 import { memoize } from "@/lib/memoize";
+import { runQuery } from "@/lib/parquet";
 
 export type ApiRoute = {
 	id: string;
@@ -21,7 +22,68 @@ export type GeoJsonLineString = {
 	coordinates: Array<[number, number]>;
 };
 
-function toApi(agency: AgencyId, row: Routes): ApiRoute {
+// DuckDB returns SQL NULL for routes with no geometry; `typeof` guards below.
+type TripRow = { route_id: string; lon?: number; lat?: number };
+
+type TripIndex = {
+	/** Routes this feed actually runs. */
+	routes: Set<string>;
+	/** `route_id` → representative polyline. */
+	shapes: Map<string, Array<[number, number]>>;
+};
+
+/**
+ * Per feed: which routes have trips, plus one representative polyline each —
+ * the most-used `shape_id` (routes run several variants: local/express,
+ * different terminals, and the spec shows a single LineString per route).
+ *
+ * Routes are taken from `trips`, not from `routes.txt`: the five borough bus
+ * feeds all ship the same 307-route table, of which each runs only its own
+ * subset.
+ */
+const tripIndex = memoize(async (agency: AgencyId) => {
+	const shapesUrl = getStaticFeedUrl(agency, "shapes");
+	const tripsUrl = getStaticFeedUrl(agency, "trips");
+
+	// Every parquet column is VARCHAR (convert.ts reads with all_varchar), so
+	// coordinates and sequence both have to be cast before they sort. The LEFT
+	// JOIN keeps routes that have trips but no usable shape.
+	const rows = await runQuery<TripRow>(
+		`SELECT t.route_id, CAST(s.shape_pt_lon AS DOUBLE) AS lon, CAST(s.shape_pt_lat AS DOUBLE) AS lat
+		 FROM (
+			SELECT route_id, mode(shape_id) AS shape_id
+			FROM read_parquet('${tripsUrl}')
+			GROUP BY route_id
+		 ) t
+		 LEFT JOIN read_parquet('${shapesUrl}') s ON s.shape_id = t.shape_id
+		 ORDER BY t.route_id, CAST(s.shape_pt_sequence AS INTEGER)`
+	);
+
+	const routes = new Set<string>();
+	const shapes = new Map<string, Array<[number, number]>>();
+
+	for (const row of rows) {
+		routes.add(row.route_id);
+
+		if (typeof row.lon !== "number" || typeof row.lat !== "number") continue;
+
+		let points = shapes.get(row.route_id);
+		if (!points) {
+			points = [];
+			shapes.set(row.route_id, points);
+		}
+
+		points.push([row.lon, row.lat]);
+	}
+
+	return { routes, shapes };
+});
+
+function toApi(
+	agency: AgencyId,
+	row: Routes,
+	points?: Array<[number, number]>
+): ApiRoute {
 	return {
 		id: row.route_id,
 		agency,
@@ -30,6 +92,7 @@ function toApi(agency: AgencyId, row: Routes): ApiRoute {
 		type: AGENCIES[agency].mode,
 		color: hex(row.route_color),
 		textColor: hex(row.route_text_color),
+		shape: points ? { type: "LineString", coordinates: points } : undefined,
 	};
 }
 
@@ -38,11 +101,16 @@ function hex(color: string): string {
 }
 
 const routeIndex = memoize(async (agency: AgencyId) => {
-	const rows = await loadTable(agency, "routes");
+	const [rows, trips] = await Promise.all([
+		loadTable(agency, "routes"),
+		tripIndex(agency),
+	]);
 	const index = new Map<string, ApiRoute>();
 
 	for (const row of rows) {
-		index.set(row.route_id, toApi(agency, row));
+		if (!trips.routes.has(row.route_id)) continue;
+
+		index.set(row.route_id, toApi(agency, row, trips.shapes.get(row.route_id)));
 	}
 
 	return index;

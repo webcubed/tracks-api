@@ -37,7 +37,7 @@ pnpm exec tsx src/index.ts & sleep 6
 curl -s localhost:3000/v1/routes?agency=subway | head -c 400
 ```
 
-Server startup awaits `loadTable("agency")` and `loadTable("routes")` — first boot downloads 16 parquet files, ~5s. `stop_times` is deliberately **not** preloaded (millions of rows); query it per request.
+Server startup awaits `loadTable(id, "agency")` and `getRoutes(id)` for all 8 feeds — first boot downloads every static table plus geometry, ~13s. `stop_times` is deliberately **not** preloaded (millions of rows); query it per request.
 
 ## Layout
 
@@ -47,8 +47,8 @@ src/
 ├── db.ts                 # memoized DuckDB connection (promise-memoized, not boolean)
 ├── constants.ts          # REALTIME_FEEDS, AGENCIES (as const), getStaticFeedUrl
 ├── lib/
-│   ├── parquet.ts        # queryTable(agency, table, where?, ...params) — uncached IO
-│   └── loadTable.ts      # loadTable(table) — promise-memoized, fans out over all feeds
+│   ├── parquet.ts        # queryTable(agency, table, where?) + runQuery(sql) — uncached IO
+│   └── loadTable.ts      # loadTable(agency, table) — promise-memoized, one feed
 ├── services/             # one file per endpoint group; type + toApi + id index
 ├── v1/index.ts           # mounts route groups
 ├── v1/routes/            # Hono routers, one per spec section
@@ -60,11 +60,14 @@ src/
 
 ### Data-access rules (don't regress these)
 
+- **Every parquet column is VARCHAR** — `scripts/convert.ts` reads CSV with `all_varchar=true`. `CAST(... AS DOUBLE/INTEGER)` in SQL for ordering and arithmetic; `Number(...)` in TS for numeric API fields. `type` checks are the only reliable NULL test (DuckDB returns `null` from `getRowObjectsJS`).
 - `queryTable` = raw uncached read of one parquet file. Never memoize inside it (it takes arbitrary `WHERE`).
-- `loadTable(table)` = whole table across all 8 feeds, memoized **by promise** so concurrent callers share one load. Failed loads evict themselves.
-- Small tables (`agency`, `routes`, `stops`) → `loadTable` + in-memory `Map` index. Big tables (`stop_times`, `trips`, `shapes`) → `queryTable` with `WHERE` per request.
+- `loadTable(agency, table)` = every row of one table from **one feed**, memoized **by promise** so concurrent callers share one load. Failed loads evict themselves. Keyed on feed + table because `Routes.agency_id`/`Stops.agency_id` are the GTFS operator, shared by all six bus feeds — flattening feeds loses their origin.
+- Small tables (`agency`, `routes`, `stops`) → `loadTable` + in-memory `Map` index. Big tables (`stop_times`, `trips`, `shapes`) → `queryTable`/`runQuery` with `WHERE` per request.
+- `memoize(fn)` (`src/lib/memoize.ts`) is the shared promise-memoization helper for services. Use it for any per-key lazy index.
 - Promise-memoize any lazy singleton (`db.ts`, `loadTable`). A `let loaded = false` guard does **not** dedupe in-flight work — that bug shipped once already.
-- Agency IDs in URLs are **feed keys** (`subway`, `lirr`, `bus_bx`, `bus_b`, `bus_busco`, `bus_m`, `bus_si`, `bus_q`), never GTFS `agency_id` (`MTA NYCT`, `LI`). `AgencyTableMap` keys === `AGENCIES` values.
+- Agency IDs in URLs are **feed keys** (`subway`, `lirr`, `bus_bx`, `bus_b`, `bus_busco`, `bus_m`, `bus_si`, `bus_q`), never GTFS `agency_id` (`MTA NYCT`, `LI`). `AgencyId` ← `AGENCY_IDS`; `AgencyTableMap` is mapped from `AgencyId`.
+- `routes.txt` lists all 307 MTA bus routes in every borough feed, but each feed's `trips` only covers its own subset (Brooklyn: 68). Filter routes through `trips`, or `GET /v1/routes?agency=bus_m` returns Brooklyn routes too.
 
 ## Lint (xo 2.0.2) — write to these, don't fix up after
 
@@ -102,7 +105,7 @@ Dead (404 / `NoSuchKey`) despite what the data-sources doc says — do not use:
 Static:
 
 - [x] `GET /v1/agencies`, `GET /v1/agencies/:id`
-- [ ] `GET /v1/routes?agency=`, `GET /v1/routes/:id?agency=` (with `shape` GeoJSON from `shapes`)
+- [x] `GET /v1/routes?agency=`, `GET /v1/routes/:id?agency=` (with `shape` GeoJSON from `shapes`)
 - [ ] `GET /v1/stops?agency=&route=`, `GET /v1/stops/:id`, `GET /v1/stops/:id/schedule?date=`
 
 Realtime:
