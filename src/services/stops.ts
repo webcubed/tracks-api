@@ -1,6 +1,7 @@
 import type { AgencyId } from "@/constants";
 import type { Stops } from "@/types/static";
 import { AGENCY_IDS, CALENDAR_FREE_FEEDS, getStaticFeedUrl } from "@/constants";
+import { distanceMeters } from "@/lib/geo";
 import { loadTable } from "@/lib/loadTable";
 import { memoize } from "@/lib/memoize";
 import { runQuery } from "@/lib/parquet";
@@ -12,9 +13,13 @@ export type ApiStop = {
 	geometry: { type: "Point"; coordinates: [number, number] };
 	agency: string;
 	routes: string[];
+	/** Metres from the query point; set only by `?lat=&lng=&radius=`. */
+	distance?: number;
 	/** Only set when the feed says so — LIRR is the only one that ships it. */
 	wheelchairAccessible?: boolean;
 };
+
+export type Proximity = { lat: number; lng: number; radius: number };
 
 type FeedStops = {
 	byId: Map<string, Stops>;
@@ -118,7 +123,8 @@ function toApi(
 
 export async function getStops(
 	agency?: AgencyId,
-	route?: string
+	route?: string,
+	near?: Proximity
 ): Promise<ApiStop[]> {
 	const feeds = agency ? [agency] : AGENCY_IDS;
 	const indexes = await Promise.all(feeds.map(async (feed) => stopIndex(feed)));
@@ -133,25 +139,34 @@ export async function getStops(
 		}
 	}
 
-	return stops;
+	if (!near) return stops;
+
+	return stops
+		.map((stop) => ({ stop, distance: distanceMeters(near, stop.location) }))
+		.filter((entry) => entry.distance <= near.radius)
+		.toSorted((a, b) => a.distance - b.distance)
+		.map((entry) => ({ ...entry.stop, distance: Math.round(entry.distance) }));
 }
 
 type ResolvedStop = { agency: AgencyId; index: FeedStops; row: Stops };
 
 /**
  * Stop ids are feed-scoped and 977 of them repeat between subway and LIRR
- * ("127", "101", …). The spec's `GET /v1/stops/:id` has no `agency` param, so
- * feeds are searched in `AGENCY_IDS` order and the first hit wins — subway
+ * ("127", "101", …), and the spec's `GET /v1/stops/:id` has no `agency` param,
+ * so feeds are searched in `AGENCY_IDS` order and the first hit wins: subway
  * first, matching the spec's `stop=127` subway example.
+ *
+ * Sequential rather than Promise.all: a common id (subway) then loads one stop
+ * index instead of cold-loading all eight on the first request of a boot.
  */
 async function resolveStop(id: string): Promise<ResolvedStop | undefined> {
-	const indexes = await Promise.all(
-		AGENCY_IDS.map(async (feed) => stopIndex(feed))
-	);
-
-	for (const [i, feed] of AGENCY_IDS.entries()) {
-		const row = indexes[i].byId.get(id);
-		if (row) return { agency: feed, index: indexes[i], row };
+	for (const feed of AGENCY_IDS) {
+		// Sequential on purpose: loading only up to the first match is the whole
+		// point of not using Promise.all here, so the awaits are the feature.
+		// eslint-disable-next-line no-await-in-loop
+		const index = await stopIndex(feed);
+		const row = index.byId.get(id);
+		if (row) return { agency: feed, index, row };
 	}
 
 	return undefined;
