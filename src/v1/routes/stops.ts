@@ -35,7 +35,7 @@ stops.get("/", async (c) => {
 
 	const parsed = parseNear(
 		c.req.query("lat"),
-		c.req.query("lng"),
+		c.req.query("lon"),
 		c.req.query("radius")
 	);
 
@@ -105,33 +105,33 @@ stops.get("/:id", async (c) => {
 
 type NearResult = { near?: Proximity; error?: string };
 
-/** `lat`, `lng` and `radius` (metres) arrive together or not at all. */
-function parseNear(lat?: string, lng?: string, radius?: string): NearResult {
-	if (lat === undefined && lng === undefined && radius === undefined) {
+/** `lat`, `lon` and `radius` (metres) arrive together or not at all. */
+function parseNear(lat?: string, lon?: string, radius?: string): NearResult {
+	if (lat === undefined && lon === undefined && radius === undefined) {
 		return {};
 	}
 
-	if (lat === undefined || lng === undefined || radius === undefined) {
-		return { error: "lat, lng and radius must be provided together" };
+	if (lat === undefined || lon === undefined || radius === undefined) {
+		return { error: "lat, lon and radius must be provided together" };
 	}
 
 	const near: Proximity = {
 		lat: Number(lat),
-		lng: Number(lng),
+		lon: Number(lon),
 		radius: Number(radius),
 	};
 	const valid =
 		Number.isFinite(near.lat) &&
 		Math.abs(near.lat) <= 90 &&
-		Number.isFinite(near.lng) &&
-		Math.abs(near.lng) <= 180 &&
+		Number.isFinite(near.lon) &&
+		Math.abs(near.lon) <= 180 &&
 		Number.isFinite(near.radius) &&
 		near.radius > 0;
 
 	if (!valid) {
 		return {
 			error:
-				"lat and lng must be coordinates and radius a positive number of metres",
+				"lat and lon must be coordinates and radius a positive number of metres",
 		};
 	}
 

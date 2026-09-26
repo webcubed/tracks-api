@@ -91,6 +91,7 @@ src/
 - Journey (`GET /v1/journey?from=&to=&date=&time=`): static-timetable earliest-arrival planner, **two legs max** (direct + one transfer), top 5 by arrival. Transfers match at station level (platforms of one station are one point; 60s buffer); cross-feed transfers are stations ≤500m apart (420s buffer) — GTFS ships no cross-feed transfer table, and stop ids repeat across feeds, so ids are never matched across feeds, only coordinates. Starting _at_ a co-located station (subway 34 St-Penn to LIRR Penn) plans a walk-only start; its `departureTime` is the query time, so `durationMinutes` includes the walk.
 - Fares (`GET /v1/fares?agency=`): MTA ships **no fare tables in any GTFS zip** (verified 2026-09-26), so `services/fares.ts` is a curated constant table from mta.info/fares-tolls (2026-01-04 prices: base $3, reduced $1.50, express $7.25, CityTicket $5.25/$7.25). Update it when MTA revises fares.
 - New error codes beyond the spec: `INVALID_LOCATION` (stops proximity params), `MISSING_FROM`/`MISSING_TO`/`INVALID_TIME` (journey). Unknown from/to reuse `STOP_NOT_FOUND` (404).
+- Longitude is abbreviated **`lon`** everywhere (fields, query params, GeoJSON comments) — the spec's sketches show `lng`; the owner prefers `lon`. GeoJSON coordinate _order_ stays `[lon, lat]` per the GeoJSON standard.
 
 ## Lint (xo 2.0.2) — write to these, don't fix up after
 
@@ -140,7 +141,7 @@ Realtime:
 
 Phase 3:
 
-- [x] `GET /v1/stops?lat=&lng=&radius=` (proximity, distance-sorted, `distance` field)
+- [x] `GET /v1/stops?lat=&lon=&radius=` (proximity, distance-sorted, `distance` field)
 - [x] `GET /v1/journey?from=&to=&date=&time=` (schedule-based, 2 legs max)
 - [x] `GET /v1/fares?agency=` (curated; no GTFS fare data exists)
 - [x] Hourly static refresh (`setInterval` in `src/index.ts`), 15s realtime TTL cache

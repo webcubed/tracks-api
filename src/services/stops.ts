@@ -9,17 +9,17 @@ import { runQuery } from "@/lib/parquet";
 export type ApiStop = {
 	id: string;
 	name: string;
-	location: { lat: number; lng: number };
+	location: { lat: number; lon: number };
 	geometry: { type: "Point"; coordinates: [number, number] };
 	agency: string;
 	routes: string[];
-	/** Metres from the query point; set only by `?lat=&lng=&radius=`. */
+	/** Metres from the query point; set only by `?lat=&lon=&radius=`. */
 	distance?: number;
 	/** Only set when the feed says so; LIRR is the only one that ships it. */
 	wheelchairAccessible?: boolean;
 };
 
-export type Proximity = { lat: number; lng: number; radius: number };
+export type Proximity = { lat: number; lon: number; radius: number };
 
 type FeedStops = {
 	byId: Map<string, Stops>;
@@ -101,13 +101,13 @@ function toApi(
 	routes: Set<string> | undefined
 ): ApiStop {
 	const lat = Number(row.stop_lat);
-	const lng = Number(row.stop_lon);
+	const lon = Number(row.stop_lon);
 
 	const stop: ApiStop = {
 		id: row.stop_id,
 		name: row.stop_name,
-		location: { lat, lng },
-		geometry: { type: "Point", coordinates: [lng, lat] },
+		location: { lat, lon },
+		geometry: { type: "Point", coordinates: [lon, lat] },
 		agency,
 		routes: [...(routes ?? [])].toSorted((a, b) =>
 			a.localeCompare(b, undefined, { numeric: true })
@@ -207,7 +207,7 @@ export async function resolveStopIds(
 export type StopRef = {
 	id: string;
 	name: string;
-	location?: { lat: number; lng: number };
+	location?: { lat: number; lon: number };
 };
 
 /**
@@ -228,13 +228,13 @@ export async function getStopRef(
 		: undefined;
 	const target = parent ?? row;
 	const lat = Number(target.stop_lat);
-	const lng = Number(target.stop_lon);
+	const lon = Number(target.stop_lon);
 
 	return {
 		id: target.stop_id,
 		name: target.stop_name,
 		location:
-			Number.isFinite(lat) && Number.isFinite(lng) ? { lat, lng } : undefined,
+			Number.isFinite(lat) && Number.isFinite(lon) ? { lat, lon } : undefined,
 	};
 }
 
@@ -344,7 +344,7 @@ export function isValidDate(value: string): boolean {
 	return date.toISOString().slice(0, 10) === value;
 }
 
-export type Station = { id: string; location: { lat: number; lng: number } };
+export type Station = { id: string; location: { lat: number; lon: number } };
 
 /**
  * Top-level stops of a feed (stations, plus standalone stops) that have
@@ -355,10 +355,10 @@ export async function getStations(agency: AgencyId): Promise<Station[]> {
 
 	return index.topLevel.flatMap((row) => {
 		const lat = Number(row.stop_lat);
-		const lng = Number(row.stop_lon);
+		const lon = Number(row.stop_lon);
 
-		return Number.isFinite(lat) && Number.isFinite(lng)
-			? [{ id: row.stop_id, location: { lat, lng } }]
+		return Number.isFinite(lat) && Number.isFinite(lon)
+			? [{ id: row.stop_id, location: { lat, lon } }]
 			: [];
 	});
 }

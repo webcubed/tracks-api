@@ -10,7 +10,7 @@ export type ApiVehicle = {
 	id: string;
 	route: string;
 	/** Absent only if the feed gives no coordinates and no resolvable stop. */
-	location?: { lat: number; lng: number };
+	location?: { lat: number; lon: number };
 	geometry?: { type: "Point"; coordinates: [number, number] };
 	bearing?: number;
 	speed?: number;
@@ -125,10 +125,10 @@ export async function getVehicles(
 		const position = vehicle?.position;
 		const location =
 			position?.latitude !== undefined && position.longitude !== undefined
-				? { lat: position.latitude, lng: position.longitude }
+				? { lat: position.latitude, lon: position.longitude }
 				: current?.location;
 		const coordinates: [number, number] | undefined = location
-			? [location.lng, location.lat]
+			? [location.lon, location.lat]
 			: undefined;
 
 		return {

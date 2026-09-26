@@ -16,7 +16,7 @@ export type ApiRoute = {
 	shape?: GeoJsonLineString;
 };
 
-/** GeoJSON: coordinates are `[lng, lat]`. */
+/** GeoJSON: coordinates are `[lon, lat]`. */
 export type GeoJsonLineString = {
 	type: "LineString";
 	coordinates: Array<[number, number]>;

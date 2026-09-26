@@ -372,7 +372,7 @@ function collectOrigins(
  * transfer always has to be an actual walk.
  */
 function memoizedTargets(
-	stations: Array<{ id: string; location: { lat: number; lng: number } }>,
+	stations: Array<{ id: string; location: { lat: number; lon: number } }>,
 	sameFeed: boolean
 ): (station: StopRef | undefined) => Array<{ id: string; buffer: number }> {
 	const cache = new Map<string, Array<{ id: string; buffer: number }>>();
