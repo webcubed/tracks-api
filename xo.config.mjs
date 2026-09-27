@@ -13,6 +13,7 @@ const xoConfig = [
 			".next/**",
 			"**/next-env.d.ts",
 			"eslint.config.mjs",
+			"docs/.vitepress/**",
 		],
 		rules: {
 			"import-x/order": "off",

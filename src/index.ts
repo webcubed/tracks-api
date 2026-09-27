@@ -1,4 +1,6 @@
+import { resolve } from "node:path";
 import { serve } from "@hono/node-server";
+import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { AGENCY_IDS } from "./constants";
@@ -10,6 +12,15 @@ import { v1 } from "./v1";
 const app = new Hono();
 app.use("*", cors());
 app.get("/", (context) => context.text("ok"));
+app.get("/docs", (context) => context.redirect("/docs/"));
+app.use(
+	"/docs/*",
+	serveStatic({
+		root: resolve("docs/.vitepress/dist"),
+		rewriteRequestPath: (path) =>
+			path.startsWith("/docs/") ? path.slice("/docs".length) : path,
+	})
+);
 app.route("v1", v1);
 
 // Static tables are small; warm them so the first request isn't the slow one.
@@ -35,9 +46,9 @@ setInterval(() => {
 
 serve({
 	fetch: app.fetch,
-	port: 3000,
+	port: Number(process.env.PORT ?? 3000),
 	hostname: "0.0.0.0",
 });
 
-console.log("server up on port 3000");
+console.log(`server up on port ${process.env.PORT ?? 3000}`);
 export default app;

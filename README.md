@@ -22,6 +22,18 @@ Static GTFS data (schedules, routes, stops, shapes) is served from Parquet files
 
 Every response uses the same envelope: `{"data": …}` on success, `{"error": {"code", "message"}}` on failure. Errors are `MISSING_*` (400) for absent required params, `INVALID_DATE` / `INVALID_TIME` / `INVALID_LOCATION` (400) for malformed ones, `*_NOT_FOUND` (404) for unknown ids, `FEED_UNAVAILABLE` (502) when an upstream is down, and `INTERNAL_ERROR` (500) for anything else.
 
+## API documentation
+
+A searchable VitePress API reference is served by the API at `/docs/` (and `/docs` redirects there). Build the static documentation before starting the server:
+
+```sh
+pnpm install
+pnpm build                  # required for /docs/
+pnpm dev                    # tsx watch; server on :3000
+```
+
+For a production start, use `pnpm build && pnpm start`. The server honors the platform-provided `PORT` environment variable (defaults to `3000`).
+
 ## Quickstart
 
 ```sh

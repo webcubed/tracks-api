@@ -13,7 +13,11 @@
 		"format": "prettier --write .",
 		"lint": "xo .",
 		"lint:fix": "xo --fix",
-		"start": "tsx src/index.ts"
+		"start": "tsx src/index.ts",
+		"build": "vitepress build docs",
+		"docs:dev": "vitepress dev docs",
+		"docs:build": "vitepress build docs",
+		"docs:preview": "vitepress preview docs"
 	},
 	"dependencies": {
 		"@duckdb/duckdb-wasm": "1.33.1-dev45.0",
@@ -32,6 +36,7 @@
 		"@types/node": "^25.9.5",
 		"prettier-plugin-pkgsort": "^0.3.0",
 		"typescript": "^6.0.3",
+		"vitepress": "^1.6.4",
 		"xo": "^2.0.2"
 	}
 }
