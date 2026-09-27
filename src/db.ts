@@ -25,7 +25,7 @@ async function open(): Promise<DuckDBConnection> {
 	await db.run("INSTALL json");
 	await db.run("LOAD json");
 	console.info(
-		`[startup] DuckDB ready in ${((Date.now() - startedAt) / 1000).toFixed(1)}s`
+		`[startup] DuckDB ready in ${((Date.now() - startedAt) / 1000).toFixed(1)}s; warming up static data for all feeds now — please wait for the per-feed ready messages.`
 	);
 	return db;
 }
