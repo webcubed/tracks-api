@@ -14,13 +14,18 @@ export async function getDb(): Promise<DuckDBConnection> {
 }
 
 async function open(): Promise<DuckDBConnection> {
-	console.log("init'ing db");
+	const startedAt = Date.now();
+	console.info(
+		"[startup] Initializing in-memory DuckDB and loading httpfs/json extensions"
+	);
 	const instance = await DuckDBInstance.create(":memory:");
 	const db = await instance.connect();
 	await db.run("INSTALL httpfs");
 	await db.run("LOAD httpfs");
 	await db.run("INSTALL json");
 	await db.run("LOAD json");
-	console.log("db up");
+	console.info(
+		`[startup] DuckDB ready in ${((Date.now() - startedAt) / 1000).toFixed(1)}s`
+	);
 	return db;
 }

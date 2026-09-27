@@ -30,15 +30,52 @@ app.use(
 );
 app.route("v1", v1);
 
+const port = Number(process.env.PORT ?? 3000);
+const startupStartedAt = Date.now();
+
 // Static tables are small; warm them so the first request isn't the slow one.
 // getRoutes() pulls in the per-feed trips + shapes geometry as well.
-async function warmStatic(): Promise<void> {
-	await Promise.all(
-		AGENCY_IDS.flatMap((id) => [loadTable(id, "agency"), getRoutes(id)])
+async function warmStatic(phase: "startup" | "refresh"): Promise<void> {
+	const warmupStartedAt = Date.now();
+	const firstBootNote =
+		phase === "startup"
+			? " First boot commonly takes around 13 seconds while remote data is loaded."
+			: "";
+
+	console.info(
+		`[${phase}] Warming agency and route data for ${AGENCY_IDS.length} feeds.${firstBootNote}`
 	);
+
+	await Promise.all(
+		AGENCY_IDS.map(async (id) => {
+			const feedStartedAt = Date.now();
+			console.info(`[${phase}] ${id}: loading agency and route data`);
+
+			try {
+				await Promise.all([loadTable(id, "agency"), getRoutes(id)]);
+			} catch (error) {
+				console.error(
+					`[${phase}] ${id}: warmup failed after ${elapsed(feedStartedAt)}`,
+					error
+				);
+				throw error;
+			}
+
+			console.info(`[${phase}] ${id}: ready in ${elapsed(feedStartedAt)}`);
+		})
+	);
+
+	console.info(`[${phase}] All feeds ready in ${elapsed(warmupStartedAt)}`);
 }
 
-await warmStatic();
+console.info(
+	`[startup] Initializing tracks-api on port ${port}; HTTP will be available after static data warmup.`
+);
+await warmStatic("startup");
+
+function elapsed(startedAt: number): string {
+	return `${((Date.now() - startedAt) / 1000).toFixed(1)}s`;
+}
 
 // Spec: static tables refresh hourly. Clear-then-warm means requests during
 // the ~10s reload wait for fresh data rather than serving yesterday's tables.
@@ -46,16 +83,18 @@ await warmStatic();
 // through memoize's self-eviction instead of serving stale rows.
 setInterval(() => {
 	clearMemoized();
-	warmStatic().catch((error: unknown) => {
+	warmStatic("refresh").catch((error: unknown) => {
 		console.error("static refresh failed:", error);
 	});
 }, 3_600_000);
 
 serve({
 	fetch: app.fetch,
-	port: Number(process.env.PORT ?? 3000),
+	port,
 	hostname: "0.0.0.0",
 });
 
-console.log(`server up on port ${process.env.PORT ?? 3000}`);
+console.info(
+	`[startup] Server ready at http://localhost:${port} (startup took ${elapsed(startupStartedAt)})`
+);
 export default app;
