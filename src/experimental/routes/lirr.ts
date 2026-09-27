@@ -1,4 +1,4 @@
-import { getProductionJson } from "@/experimental/services/production";
+import { getRadarJson } from "@/experimental/services/production";
 import { Hono } from "hono";
 
 export const lirr = new Hono();
@@ -25,7 +25,7 @@ lirr.get("/locations", async (c) => {
 	const url = new URL(`${RADAR_BASE}/locations`);
 	url.searchParams.set("railroad", c.req.query("railroad") ?? "LIRR");
 	url.searchParams.set("geometry", c.req.query("geometry") ?? "TRACK_TURF");
-	const data = await getProductionJson(url.toString());
+	const data = await getRadarJson(url.toString());
 
 	return c.json({ data, source: "mta-radar-locations", experimental: true });
 });
@@ -68,7 +68,7 @@ lirr.get("/countdown/:station", async (c) => {
 	const url = new URL(`${RADAR_BASE}/countdown/${encodeURIComponent(station)}`);
 	url.searchParams.set("include_passed", includePassed);
 	url.searchParams.set("hours", hours);
-	const data = await getProductionJson(url.toString());
+	const data = await getRadarJson(url.toString());
 
 	return c.json({ data, source: "mta-radar-countdown", experimental: true });
 });
@@ -87,18 +87,18 @@ lirr.get("/solari/:station", async (c) => {
 		);
 	}
 
-	const data = await getProductionJson(
+	const data = await getRadarJson(
 		`${RADAR_BASE}/solari/${encodeURIComponent(station)}`
 	);
 	return c.json({ data, source: "mta-radar-solari", experimental: true });
 });
 
 lirr.get("/status", async (c) => {
-	const data = await getProductionJson(`${RADAR_BASE}/status`);
+	const data = await getRadarJson(`${RADAR_BASE}/status`);
 	return c.json({ data, source: "mta-radar-status", experimental: true });
 });
 
 lirr.get("/health", async (c) => {
-	const data = await getProductionJson(`${RADAR_BASE}/health`);
+	const data = await getRadarJson(`${RADAR_BASE}/health`);
 	return c.json({ data, source: "mta-radar-health", experimental: true });
 });
