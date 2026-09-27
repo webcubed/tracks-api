@@ -29,4 +29,22 @@ curl https://your-api.example/v1/agencies
 curl https://your-api.example/v1/agencies/subway
 ```
 
-Successful responses use the standard `{ "data": ... }` envelope. An unknown ID returns `404` with `AGENCY_NOT_FOUND`.
+## Response shape
+
+`GET /v1/agencies` returns an array; `GET /v1/agencies/:id` returns one object. Both use the same success envelope:
+
+```json
+{
+  "data": [
+    {
+      "id": "subway",
+      "name": "New York City Subway",
+      "url": "https://new.mta.info/",
+      "timezone": "America/New_York",
+      "modes": ["subway"]
+    }
+  ]
+}
+```
+
+An unknown ID returns `404` with `AGENCY_NOT_FOUND`.

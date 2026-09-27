@@ -12,6 +12,31 @@
 
 The response contains the resolved stop and an `arrivals` list. Arrival entries include route, direction, headsign, arrival time, minutes away, realtime status, and delay; occupancy and vehicle ID are included when available. Subway directions use `uptown`/`downtown`; other services use cardinal directions.
 
+## Response shape
+
+```json
+{
+  "data": {
+    "stop": { "id": "127", "name": "Times Sq-42 St" },
+    "arrivals": [
+      {
+        "route": "1",
+        "direction": "downtown",
+        "headsign": "South Ferry",
+        "arrivalTime": "2026-09-26T08:31:00-04:00",
+        "minutes": 3,
+        "realtime": true,
+        "delay": 45,
+        "occupancy": "FEW_SEATS_AVAILABLE",
+        "vehicleId": "sample-vehicle-id"
+      }
+    ]
+  }
+}
+```
+
+`arrivals` is an empty array when no upcoming realtime arrivals are available. Optional values such as `occupancy` and `vehicleId` are omitted when unavailable. Values above illustrate field shape; live values change.
+
 ## Examples
 
 ```sh

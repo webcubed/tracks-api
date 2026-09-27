@@ -8,7 +8,33 @@
 | --- | --- | --- |
 | `agency` | No | Limit the response to one feed ID. |
 
-Fare records can include a name, amount, currency, and note. Some rail prices vary by zone or peak period and therefore omit a fixed amount.
+`data` is an array of agency records. Fare records include a name and currency; `amount` and `note` are optional. Some rail prices vary by zone or peak period and therefore omit a fixed amount.
+
+## Response shape
+
+```json
+{
+  "data": [
+    {
+      "agency": "lirr",
+      "mode": "rail",
+      "fares": [
+        {
+          "name": "CityTicket off-peak (within NYC)",
+          "amount": 5.25,
+          "currency": "USD",
+          "note": "One-way, no direction change inside New York City"
+        },
+        {
+          "name": "Zone fare",
+          "currency": "USD",
+          "note": "Varies by stations and peak/off-peak"
+        }
+      ]
+    }
+  ]
+}
+```
 
 ```sh
 curl 'https://your-api.example/v1/fares'
