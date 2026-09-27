@@ -25,6 +25,7 @@ All successful responses use `{ "data": ... }`; failures use `{ "error": { "code
 - [Fares](/fares) — fare reference by agency.
 - [Journey planning](/journey) — static timetable itinerary planning.
 - [Errors](/errors) — error envelope and codes.
+- [Experimental MTA APIs](/experimental) — additive nearby OTP and MTA Radar proxy endpoints.
 
 ## Response notes
 

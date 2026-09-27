@@ -20,7 +20,9 @@ Static GTFS data (schedules, routes, stops, shapes) is served from Parquet files
 | `GET /v1/fares?agency=`                                       | Current fares per agency (base, reduced, express, CityTicket)                                                                                                                                                                                           |
 | `GET /v1/journey?from=&to=&date=&time=&fromAgency=&toAgency=` | Earliest-arrival itineraries on the static timetable: up to three rides (subway + LIRR), station-level transfers via `transfers.txt`, and walk connections between nearby stations across feeds (`fromAgency`/`toAgency` pin the feed for shadowed ids) |
 
-Every response uses the same envelope: `{"data": …}` on success, `{"error": {"code", "message"}}` on failure. Errors are `MISSING_*` (400) for absent required params, `INVALID_DATE` / `INVALID_TIME` / `INVALID_LOCATION` (400) for malformed ones, `*_NOT_FOUND` (404) for unknown ids, `FEED_UNAVAILABLE` (502) when an upstream is down, and `INTERNAL_ERROR` (500) for anything else.
+Experimental production-source proxies live under `/experimental` and are documented separately at [`/docs/experimental`](/docs/experimental). They include MTA OTP Nearby walking routes/stop alerts and MTA Radar railroad track, consist, operational, branch status, and health data. These undocumented upstreams are not part of the stable `/v1` contract; Radar locations/countdown/Solari returned redirects during initial checks. MTA Nearby optionally accepts `MTA_NEARBY_API_KEY` via environment configuration; no credential is checked into this repository.
+
+Every `/v1` response uses the same envelope: `{"data": …}` on success, `{"error": {"code", "message"}}` on failure. Errors are `MISSING_*` (400) for absent required params, `INVALID_DATE` / `INVALID_TIME` / `INVALID_LOCATION` (400) for malformed ones, `*_NOT_FOUND` (404) for unknown ids, `FEED_UNAVAILABLE` (502) when an upstream is down, and `INTERNAL_ERROR` (500) for anything else.
 
 ## API documentation
 
@@ -84,7 +86,7 @@ A few decisions worth knowing before changing things:
 - Subway real-time trip ids don't exist in the static `trips` table (different id schemes), so subway arrivals recover headsign and direction by matching against today's schedule and reading the platform suffix.
 - The journey planner is a two-leg (direct + one transfer) earliest-arrival search; transfers match at station level, and cross-feed transfers are stations within 500 m of each other.
 
-See [AGENTS.md](AGENTS.md) for the full data-access rules, per-feed quirks, and the current feature status.
+See [AGENTS.md](AGENTS.md) for the full data-access rules, per-feed quirks, and the current feature status. Copied MTA research notes live under [`references/mta-project/`](references/mta-project/); embedded credentials were redacted and the AI-generated upstream schemas remain unverified.
 
 ## Development
 

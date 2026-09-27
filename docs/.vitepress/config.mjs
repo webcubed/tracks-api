@@ -25,6 +25,7 @@ export default defineConfig({
 					{ text: "Fares", link: "/fares" },
 					{ text: "Journey planning", link: "/journey" },
 					{ text: "Errors", link: "/errors" },
+					{ text: "Experimental MTA APIs", link: "/experimental" },
 				],
 			},
 		],

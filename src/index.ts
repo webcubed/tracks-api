@@ -4,6 +4,7 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { AGENCY_IDS } from "./constants";
+import { experimental } from "./experimental";
 import { loadTable } from "./lib/loadTable";
 import { clearMemoized } from "./lib/memoize";
 import { getRoutes } from "./services/routes";
@@ -29,6 +30,7 @@ app.use(
 	})
 );
 app.route("v1", v1);
+app.route("experimental", experimental);
 
 const port = Number(process.env.PORT ?? 3000);
 const startupStartedAt = Date.now();
