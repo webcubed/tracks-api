@@ -17,8 +17,15 @@ app.use(
 	"/docs/*",
 	serveStatic({
 		root: resolve("docs/.vitepress/dist"),
-		rewriteRequestPath: (path) =>
-			path.startsWith("/docs/") ? path.slice("/docs".length) : path,
+		rewriteRequestPath(path) {
+			const filePath = path.startsWith("/docs/")
+				? path.slice("/docs".length)
+				: path;
+
+			if (filePath.endsWith("/")) return `${filePath}index.html`;
+
+			return filePath.includes(".") ? filePath : `${filePath}.html`;
+		},
 	})
 );
 app.route("v1", v1);
