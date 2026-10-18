@@ -33,7 +33,12 @@ app.use(
 app.route("v1", v1);
 app.route("experimental", experimental);
 
-const port = Number(process.env.PORT ?? 3000);
+// `PORT` may be set but empty (a zero-byte .env exports nothing, but a shell
+// can export PORT=""): Number("") is 0, which asks the OS for a random port and
+// silently breaks health checks. Fall back to 3000 for anything unusable.
+const requestedPort = Number(process.env.PORT);
+const port =
+	Number.isInteger(requestedPort) && requestedPort > 0 ? requestedPort : 3000;
 const startupStartedAt = Date.now();
 
 // Static tables are small; warm them sequentially so DuckDB never allocates
