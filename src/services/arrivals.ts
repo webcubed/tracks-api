@@ -1,4 +1,5 @@
 import type { AgencyId } from "@/constants";
+import type { StopRef } from "@/services/network";
 import type { ApiSchedule, Departure } from "@/services/schedule";
 import type {
 	FeedEntity,
@@ -6,7 +7,7 @@ import type {
 	FeedTripUpdate,
 } from "@/types/realtime";
 import { clockSeconds, today } from "@/lib/time";
-import { directionIndex } from "@/services/network";
+import { directionIndex, getStopRefs } from "@/services/network";
 import { fetchRealtime, isoNewYork, lookupTrips } from "@/services/realtime";
 import { getSchedule } from "@/services/schedule";
 import { resolveStopIds } from "@/services/stops";
@@ -23,6 +24,12 @@ export type ApiArrival = {
 	realtime: boolean;
 	/** Schedule deviation in seconds. */
 	delay: number;
+	/**
+	 * Name of the trip's last stop, taken from the final stop the real-time feed
+	 * still lists for it. The destination sign riders actually want, unlike the
+	 * generic `uptown`/`downtown` direction.
+	 */
+	lastStop?: string;
 	occupancy?: string;
 	vehicleId?: string;
 };
@@ -36,6 +43,8 @@ type Candidate = {
 	epoch: number;
 	tripId: string;
 	feedRouteId?: string;
+	/** Last stop the feed still lists for the trip: its terminal. */
+	terminalId?: string;
 	stu: FeedStopTimeUpdate;
 	update: FeedTripUpdate;
 };
@@ -67,6 +76,19 @@ export async function getArrivals(
 	const trips = await lookupTrips(agency, [
 		...new Set(candidates.map((candidate) => candidate.tripId)),
 	]);
+	// Terminal names: the same lightweight stop index the vehicle feed uses,
+	// one lookup for every trip in the response.
+	const terminalIds = [
+		...new Set(
+			candidates.flatMap((candidate) =>
+				candidate.terminalId ? [candidate.terminalId] : []
+			)
+		),
+	];
+	const terminals =
+		terminalIds.length > 0
+			? await getStopRefs(agency, terminalIds)
+			: new Map<string, StopRef | undefined>();
 	const [schedule, directions] = await Promise.all([
 		candidates.some((candidate) => !trips.has(candidate.tripId))
 			? getSchedule(stopId, today())
@@ -95,6 +117,10 @@ export async function getArrivals(
 				route: trip?.routeId ?? candidate.feedRouteId ?? "",
 				direction: arrivalDirection(agency, cardinal ?? scheduled?.direction),
 				headsign: trip?.headsign ?? scheduled?.headsign ?? "",
+				lastStop:
+					(candidate.terminalId
+						? terminals.get(candidate.terminalId)?.name
+						: undefined) ?? undefined,
 				arrivalTime: isoNewYork(candidate.epoch),
 				minutes: Math.max(0, Math.round((candidate.epoch - now) / 60)),
 				realtime: candidate.stu.scheduleRelationship !== "NO_DATA",
@@ -146,6 +172,16 @@ function scan(
 	return { candidates, riders };
 }
 
+/**
+ * The trip's terminal: the final stop the feed still lists for it. Feeds drop
+ * passed stops from the update, so the last entry is the end of the run even
+ * for short-turns the static schedule does not describe.
+ */
+function terminalOf(update: FeedTripUpdate): string | undefined {
+	const last = update.stopTimeUpdate?.at(-1);
+	return last?.stopId ?? undefined;
+}
+
 /** One stop time ahead at this stop, or nothing. */
 function candidate(
 	update: FeedTripUpdate,
@@ -160,7 +196,14 @@ function candidate(
 	const epoch = time ? Number(time) : Number.NaN;
 	if (!Number.isFinite(epoch) || epoch < scope.now) return undefined;
 
-	return { epoch, tripId, feedRouteId: update.trip?.routeId, stu, update };
+	return {
+		epoch,
+		tripId,
+		feedRouteId: update.trip?.routeId,
+		terminalId: terminalOf(update),
+		stu,
+		update,
+	};
 }
 
 /** Schedule deviation in seconds; feeds carry it in three places. */
