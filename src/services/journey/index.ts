@@ -1,28 +1,28 @@
 import type { ApiJourney, Search } from "@/services/journey/types";
 import type { ResolvedStopIds } from "@/services/stops";
-import { AGENCY_IDS } from "@/constants";
 import { distanceMeters } from "@/lib/geo";
 import { clockSeconds } from "@/lib/time";
 import { admit, drainWalks } from "@/services/journey/labels";
 import { rankDestinations, renderItineraries } from "@/services/journey/render";
 import { boardRound, stationGrids } from "@/services/journey/scan";
-import { MAX_RIDES } from "@/services/journey/types";
+import { MAX_RIDES, RAIL_FEEDS, rideFeedsFor } from "@/services/journey/types";
 import { transferIndex } from "@/services/network";
 
 export type { ApiJourney, Journey, JourneyLeg } from "@/services/journey/types";
 
 /**
  * Earliest-arrival journeys on the static timetable: a round-based scan (one
- * round per ride, up to three rides), returning the best 5 by arrival.
+ * round per ride, up to four rides), returning the best 5 by arrival with
+ * distinct route patterns preferred so one popular connection does not hide
+ * every other way across the network.
  *
  * Transfers match at station level: the platforms of one station count as one
  * transfer point, and cross-feed transfers are stations within a short walk
  * (GTFS ships no cross-feed transfer table, and stop ids repeat across feeds,
- * so ids are never matched across feeds, only coordinates). honey: boarding
- * happens on subway and LIRR trips only. Bus stops join through the walk
- * links, so a bus stop can start or end a journey but a bus ride can't be a
- * leg; scan the bus feeds too if that request ever comes. A walk link is
- * never rendered as a leg; it shows as the station change between two legs.
+ * so ids are never matched across feeds, only coordinates). Every reached feed
+ * can board rides, buses included, so a bus can be part of a rail-to-subway
+ * trip even when neither endpoint is a bus stop. A walk link is never rendered
+ * as a leg; it shows as the station change between two rides.
  */
 export async function planJourney(
 	from: ResolvedStopIds,
@@ -46,14 +46,17 @@ export async function planJourney(
 
 	const [network, transferIndexes] = await Promise.all([
 		stationGrids(),
-		Promise.all(AGENCY_IDS.map(async (feed) => transferIndex(feed))),
+		Promise.all(
+			RAIL_FEEDS.map(async (feed) => [feed, await transferIndex(feed)] as const)
+		),
 	]);
+	const transfers = new Map(transferIndexes);
 	const search: Search = {
 		labels: new Map(),
 		walkQueue: [],
 		grids: network.grids,
 		stationsById: network.byId,
-		transfers: new Map(AGENCY_IDS.map((feed, i) => [feed, transferIndexes[i]])),
+		transfers,
 		destKey: `${to.agency}:${to.stop.id}`,
 	};
 
@@ -64,16 +67,19 @@ export async function planJourney(
 		lon: from.stop.location.lon,
 		arrival: clockSeconds(time),
 		rides: 0,
+		pattern: "",
 		round: 0,
 		via: { kind: "start" },
 	});
 	drainWalks(search);
 
+	const feeds = rideFeedsFor(from.agency, to.agency);
+
 	// Rounds must run in order: each one rides from the labels the previous
 	// round produced, so the awaits are the algorithm.
 	for (let round = 1; round <= MAX_RIDES; round++) {
 		// eslint-disable-next-line no-await-in-loop
-		const added = await boardRound(search, round, date);
+		const added = await boardRound(search, round, feeds, date);
 		if (added === 0) break;
 	}
 

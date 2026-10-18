@@ -2,10 +2,12 @@ import { ExperimentalFeedError } from "@/experimental/services/production";
 import { Hono } from "hono";
 import { lirr } from "./routes/lirr";
 import { nearby } from "./routes/nearby";
+import { osm } from "./routes/osm";
 
 export const experimental = new Hono();
 experimental.route("/mta-info/nearby", nearby);
 experimental.route("/mta-radar", lirr);
+experimental.route("/osm", osm);
 
 experimental.onError((error, c) => {
 	if (error instanceof ExperimentalFeedError) {

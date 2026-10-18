@@ -2,13 +2,9 @@
 
 `GET /v1/journey` finds up to five earliest-arrival itineraries using the static timetable.
 
-The planner supports subway and LIRR as ride legs. Nearby stops across feeds and stations can be linked by walking; bus stops can be walk connections, but bus rides are not included as itinerary legs. It plans up to three rides per itinerary. It also uses scheduled GTFS timetables, not live GTFS-Realtime arrival predictions; a journey can therefore be planned from the timetable but does not currently account for realtime delays, cancellations, or vehicle positions.
+The planner searches scheduled trips in the subway, LIRR, and bus feeds, linking nearby stations and stops with walking transfers. It allows up to four rides per itinerary, including mixed-mode routes such as a bus-to-subway connection or LIRR-to-shuttle-to-subway. Search labels preserve distinct route patterns, so the five results can show different ways to make a trip rather than five departures using the same transfer. Results use scheduled GTFS timetables, not live GTFS-Realtime arrival predictions; they do not account for delays, cancellations, or vehicle positions.
 
-### Why are bus legs not supported?
-
-This is a current implementation limit, not a lack of MTA bus data: bus schedules and realtime feeds are available to other API endpoints. The journey search only boards trips from the subway and LIRR feeds. It loads bus stops into the spatial network so a bus stop can be a walk-linked origin, destination, or transfer point, but does not scan bus timetables for ride legs.
-
-Supporting bus rides means extending the round-based search to scan the borough bus feeds, find boardable trips, and include their stop sequences and transfer/wait times when ranking itineraries. The planner has not had that extension implemented yet; bus legs are not silently inferred from nearby bus stops.
+Bus feeds are scanned only when the search frontier reaches stops in that feed. A walk between feeds is represented by the time to change stops, not as a separate ride leg. This can find useful combinations such as Q28 → 7 → 1/2/3 when the scheduled connections line up, while not assuming a bus trip is faster merely because its route is nearby.
 
 ### Why is journey planning not realtime?
 

@@ -1,10 +1,11 @@
 import type { AgencyId } from "@/constants";
 import type { StopRef } from "@/services/network";
 import type { FeedEntity, FeedTripUpdate } from "@/types/realtime";
-import { AGENCY_IDS } from "@/constants";
-import { getStopRef } from "@/services/network";
-import { fetchRealtime, lookupTrips } from "@/services/realtime";
-import { getRoute } from "@/services/routes";
+import { AGENCY_IDS, REALTIME_FEEDS } from "@/constants";
+import { memoize } from "@/lib/memoize";
+import { getStopRefs } from "@/services/network";
+import { FEED_TTL_MS, fetchRealtime, lookupTrips } from "@/services/realtime";
+import { getRoute, getRoutes } from "@/services/routes";
 
 export type ApiVehicle = {
 	id: string;
@@ -50,78 +51,163 @@ function nextStopAhead(
 	return undefined;
 }
 
+type PreparedVehicle = {
+	entity: FeedEntity;
+	tripId: string;
+	feedRouteId?: string;
+	nextStop?: string;
+};
+
+type MatchedVehicle = PreparedVehicle & { route: string };
+
+const cachedTripLookup = memoize(
+	async (feed: AgencyId, tripIds: readonly string[]) =>
+		lookupTrips(feed, tripIds),
+	FEED_TTL_MS
+);
+
 /**
- * Live vehicles on a route: positions from the vehicle feed, next stop from
- * the trip update of the same trip. Trip updates and positions are separate
- * endpoints only for the bus; subway and LIRR send both in one payload.
+ * Bus feeds are one citywide realtime payload, and each subway cluster is
+ * shared by all routes it contains. Prepare their vehicle/update association
+ * once per 15-second realtime cache window, independent of map viewport.
  */
-export async function getVehicles(
-	route: string,
-	agency?: AgencyId
-): Promise<ApiVehicle[] | undefined> {
-	const feed = await feedForRoute(route, agency);
-	if (!feed) return undefined;
+const prepareRealtimeVehicles = memoize(
+	async (
+		feed: AgencyId,
+		routes: readonly string[]
+	): Promise<PreparedVehicle[]> => {
+		const entities = await fetchRealtime(feed, routes);
+		const now = Date.now() / 1000;
+		const ahead = new Map<string, string>();
+		for (const entity of entities) {
+			const tripId = entity.tripUpdate?.trip?.tripId;
+			const next = nextStopAhead(entity.tripUpdate, now);
+			if (tripId && next && !ahead.has(tripId)) ahead.set(tripId, next);
+		}
 
-	const entities = await fetchRealtime(feed, [route]);
-	const now = Date.now() / 1000;
-
-	// Next stop ahead for each trip.
-	const ahead = new Map<string, string>();
-	for (const entity of entities) {
-		const update = entity.tripUpdate;
-		const tripId = update?.trip?.tripId;
-		const next = nextStopAhead(update, now);
-
-		if (tripId && next && !ahead.has(tripId)) ahead.set(tripId, next);
-	}
-
-	const tracked: Array<{
-		entity: FeedEntity;
-		tripId: string;
-		feedRouteId?: string;
-	}> = [];
-
-	for (const entity of entities) {
-		const tripId = entity.vehicle?.trip?.tripId;
-		if (!tripId) continue;
-
-		tracked.push({
-			entity,
-			tripId,
-			feedRouteId: entity.vehicle?.trip?.routeId,
+		return entities.flatMap((entity) => {
+			const tripId = entity.vehicle?.trip?.tripId;
+			return tripId
+				? [
+						{
+							entity,
+							tripId,
+							feedRouteId: entity.vehicle?.trip?.routeId,
+							nextStop: ahead.get(tripId),
+						},
+					]
+				: [];
 		});
-	}
+	},
+	FEED_TTL_MS
+);
 
-	// LIRR trips carry no route id, so only those go to the static lookup.
-	const trips = await lookupTrips(feed, [
-		...new Set(tracked.filter((t) => !t.feedRouteId).map((t) => t.tripId)),
-	]);
-	const matched = tracked.filter(
-		(t) => (t.feedRouteId ?? trips.get(t.tripId)?.routeId) === route
+export type VehicleBounds = {
+	west: number;
+	south: number;
+	east: number;
+	north: number;
+};
+
+/**
+ * Vehicles for multiple routes in one feed. Bounds are applied to GPS positions
+ * before any stop metadata is resolved; only positionless trains need a
+ * current-stop lookup to decide whether they belong in the viewport.
+ */
+export async function getVehiclesForAgency(
+	feed: AgencyId,
+	routes?: readonly string[],
+	bounds?: VehicleBounds
+): Promise<ApiVehicle[]> {
+	const knownRoutes = await getRoutes(feed);
+	const knownRouteIds = new Set(knownRoutes.map((route) => route.id));
+	const requested = routes?.length
+		? new Set(routes.filter((id) => knownRouteIds.has(id)))
+		: knownRouteIds;
+	if (requested.size === 0) return [];
+
+	const isBus = feed.startsWith("bus_");
+	const realtimeFeed = isBus ? "bus_bx" : feed;
+	const realtimeRoutes = isBus
+		? ["*"]
+		: feed === "subway"
+			? REALTIME_FEEDS.SUBWAY.filter((cluster) =>
+					cluster.routes.some((route) => requested.has(route))
+				)
+					.flatMap((cluster) => cluster.routes)
+					.toSorted()
+			: [...requested].toSorted();
+	const prepared = await prepareRealtimeVehicles(realtimeFeed, realtimeRoutes);
+	const candidates = prepared.filter(({ entity }) => {
+		const position = entity.vehicle?.position;
+		if (
+			!bounds ||
+			position?.latitude === undefined ||
+			position.longitude === undefined
+		)
+			return true;
+		return inBounds(position.latitude, position.longitude, bounds);
+	});
+	const missingRouteTrips =
+		feed === "lirr"
+			? [
+					...new Set(
+						candidates
+							.filter((item) => !item.feedRouteId)
+							.map((item) => item.tripId)
+					),
+				]
+			: [];
+	// LIRR trip ids omit their route. Bus/subway include it, so avoid a DuckDB
+	// trip-table query entirely for those feeds.
+	const trips = await cachedTripLookup(feed, missingRouteTrips.toSorted());
+	const matched: MatchedVehicle[] = candidates.flatMap(
+		(item): MatchedVehicle[] => {
+			const route = item.feedRouteId ?? trips.get(item.tripId)?.routeId;
+			return route && requested.has(route) ? [{ ...item, route }] : [];
+		}
 	);
 
-	// Every stop the response may name: current (subway vehicles report no
-	// coordinates; the platform they stand on is the closest real position)
-	// and next.
-	const stopIds = new Set<string>();
-	for (const { entity, tripId } of matched) {
-		const next = ahead.get(tripId);
-		if (next) stopIds.add(next);
-		if (entity.vehicle?.stopId) stopIds.add(entity.vehicle.stopId);
-	}
+	const currentStopIds = [
+		...new Set(
+			matched.flatMap(({ entity }) => {
+				const { vehicle } = entity;
+				const position = vehicle?.position;
+				return vehicle?.stopId &&
+					(position?.latitude === undefined || position.longitude === undefined)
+					? [vehicle.stopId]
+					: [];
+			})
+		),
+	];
+	const currentRefs = await stopRefs(feed, currentStopIds);
+	const visible = matched.filter(({ entity }) => {
+		if (!bounds) return true;
+		const position = entity.vehicle?.position;
+		if (position?.latitude !== undefined && position.longitude !== undefined)
+			return inBounds(position.latitude, position.longitude, bounds);
+		const current = entity.vehicle?.stopId
+			? currentRefs.get(entity.vehicle.stopId)
+			: undefined;
+		return Boolean(
+			current?.location &&
+			inBounds(current.location.lat, current.location.lon, bounds)
+		);
+	});
+	const stopIds = [
+		...new Set(
+			visible.flatMap(({ entity, nextStop }) => [
+				...(entity.vehicle?.stopId ? [entity.vehicle.stopId] : []),
+				...(nextStop ? [nextStop] : []),
+			])
+		),
+	];
+	const refs = await stopRefs(feed, stopIds);
 
-	const refs = new Map<string, StopRef | undefined>();
-	await Promise.all(
-		[...stopIds].map(async (id) => {
-			refs.set(id, await getStopRef(feed, id));
-		})
-	);
-
-	return matched.map(({ entity, tripId }) => {
+	return visible.map(({ entity, nextStop, route }) => {
 		const { vehicle } = entity;
 		const current = vehicle?.stopId ? refs.get(vehicle.stopId) : undefined;
-		const nextId = ahead.get(tripId);
-		const next = nextId ? refs.get(nextId) : undefined;
+		const next = nextStop ? refs.get(nextStop) : undefined;
 		const position = vehicle?.position;
 		const location =
 			position?.latitude !== undefined && position.longitude !== undefined
@@ -145,4 +231,29 @@ export async function getVehicles(
 			occupancy: vehicle?.occupancyStatus,
 		};
 	});
+}
+
+function inBounds(lat: number, lon: number, bounds: VehicleBounds): boolean {
+	return (
+		lon >= bounds.west &&
+		lon <= bounds.east &&
+		lat >= bounds.south &&
+		lat <= bounds.north
+	);
+}
+
+async function stopRefs(
+	feed: AgencyId,
+	ids: string[]
+): Promise<Map<string, StopRef | undefined>> {
+	return getStopRefs(feed, ids);
+}
+
+export async function getVehicles(
+	route: string,
+	agency?: AgencyId
+): Promise<ApiVehicle[] | undefined> {
+	const feed = await feedForRoute(route, agency);
+	if (!feed) return undefined;
+	return getVehiclesForAgency(feed, [route]);
 }

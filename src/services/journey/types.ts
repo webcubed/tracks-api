@@ -1,5 +1,6 @@
 import type { AgencyId } from "@/constants";
 import type { Station, TransferIndex } from "@/services/network";
+import { AGENCY_IDS } from "@/constants";
 
 export type JourneyLeg = {
 	route: string;
@@ -64,6 +65,8 @@ export type Label = {
 	lon: number;
 	arrival: number;
 	rides: number;
+	/** Feed/route sequence so a faster route does not erase every alternative. */
+	pattern: string;
 	round: number;
 	via: Link;
 };
@@ -89,9 +92,12 @@ export type Network = {
 };
 
 export const MAX_ITINERARIES = 5;
-/** Most NYC trips take 2 or 3 rides; a 4th would double the per-round
- * stop_times scans for increasingly contrived chains. */
-export const MAX_RIDES = 3;
+/**
+ * Four rides allows realistic mixed-mode paths such as LIRR → subway
+ * shuttle → subway trunk, or bus → subway transfer → subway trunk, without
+ * opening the scan to long chains of opportunistic bus hops.
+ */
+export const MAX_RIDES = 4;
 /** Interchange buffer when changing trips within one station. */
 export const TRANSFER_S = 60;
 /** Cross-feed transfers are a walk. 500m covers the complexes GTFS pins
@@ -101,7 +107,22 @@ export const WALK_M = 500;
 export const WALK_S = 420;
 /** How far past the frontier a round boards; overnight headways hit 20 min. */
 export const WINDOW_S = 7200;
-/** Rides board on the rail feeds; every feed joins in through walk links. */
+/** Feeds a ride can board at all. */
+export const RIDE_FEEDS: readonly AgencyId[] = AGENCY_IDS;
+
+/** The rail feeds, which board on their own. */
 export const RAIL_FEEDS: readonly AgencyId[] = ["subway", "lirr"];
+
+/**
+ * Every feed can be a useful leg, not only a bus endpoint. `boardRound` only
+ * opens a feed's timetable when the current frontier has a reachable station
+ * in that feed.
+ */
+export function rideFeedsFor(
+	..._agencies: readonly AgencyId[]
+): readonly AgencyId[] {
+	return RIDE_FEEDS;
+}
+
 /** ~330 m cells so a 500 m walk stays inside a 5x5 block of them. */
 export const CELL_DEGREES = 0.003;

@@ -128,3 +128,29 @@ Returns dynamic upstream subsystem keys with `healthy` and `age` (seconds since 
 ### Errors
 
 Invalid station IDs/options return `400`. Upstream failures or malformed JSON return `502 EXPERIMENTAL_FEED_UNAVAILABLE`. These APIs can change without notice; validate fields before relying on them in applications.
+
+## OpenStreetMap track sections
+
+### `GET /experimental/osm/sections`
+
+The names the MTA's own feeds never carry: yards, junctions, crossovers and signal boxes — "interlockings" to a rider — along the LIRR. The railroad's realtime feed knows codes such as `HAR` and `WSL` but gives them no coordinates, and no static feed lists them as stops, so OpenStreetMap is the only source that can place them on a map. A feature is kept only when an LIRR alignment runs within 400 m of it, its `operator` tag does not name another railroad, and no subway alignment is clearly closer than the LIRR's — the corridor query otherwise returns Metro-North interlockings and subway yards alongside the LIRR's own.
+
+A monthly GitHub Actions workflow fetches the Overpass data, filters it to the LIRR alignments, and publishes a JSON snapshot as the `latest-rail-sections` release asset. This endpoint only reads that static asset and caches it in process; normal map loads never query Overpass. Set `RAIL_SECTIONS_URL` to use a different snapshot URL.
+
+```json
+{
+	"data": [
+		{
+			"name": "Babylon Yard",
+			"kind": "yard",
+			"location": { "lat": 40.7005, "lon": -73.3242 },
+			"distance": 41
+		}
+	],
+	"attribution": "© OpenStreetMap contributors",
+	"source": "openstreetmap-overpass",
+	"experimental": true
+}
+```
+
+If the monthly snapshot is unavailable or malformed, the endpoint returns `503` with an empty `data` array and an explanatory error. The scheduled job refuses to publish an empty snapshot.

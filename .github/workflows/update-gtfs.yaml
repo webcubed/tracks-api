@@ -11,16 +11,21 @@ jobs:
   process-gtfs:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v2
+      - name: Check out repository
+        uses: actions/checkout@v4
 
       - name: Set up Node.js
-        uses: actions/setup-node@v2
+        uses: actions/setup-node@v4
         with:
           node-version: "24"
 
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
       - name: Install dependencies
-        run: npm install
+        run: pnpm install --frozen-lockfile
 
       - name: Download & Extract GTFS
         run: |
@@ -50,15 +55,17 @@ jobs:
           curl -L "https://rrgtfsfeeds.s3.amazonaws.com/gtfs_busco.zip" -o bus_busco.zip
           unzip bus_busco.zip -d gtfs/raw/bus_busco
 
-      - name: Create Parquet files
-        run: npx tsx scripts/convert.ts
+      - name: Create Parquet files and journey indexes
+        run: pnpm exec tsx scripts/convert.ts
 
       - name: Publish Github Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: latest-gtfs
           name: Latest GTFS Parquet Files
           files: gtfs/output/*.parquet
           make_latest: true
+          overwrite_files: true
+          fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

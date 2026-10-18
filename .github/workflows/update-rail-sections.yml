@@ -1,0 +1,44 @@
+name: Update OSM rail sections
+
+on:
+  schedule:
+    - cron: "17 4 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update-sections:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Fetch and filter LIRR track sections from OSM
+        run: pnpm exec tsx scripts/update-rail-sections.ts rail-sections.json
+
+      - name: Publish monthly snapshot
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: latest-rail-sections
+          name: Latest OSM rail sections
+          files: rail-sections.json
+          make_latest: false
+          overwrite_files: true
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

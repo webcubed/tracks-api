@@ -2,7 +2,13 @@ import type { AgencyId } from "@/constants";
 import type { Stops } from "@/types/static";
 import { AGENCY_IDS } from "@/constants";
 import { distanceMeters } from "@/lib/geo";
-import { childIds, resolveStop, stopIndex } from "@/services/network";
+import { loadTable } from "@/lib/loadTable";
+import {
+	childIds,
+	getStopRef,
+	resolveStop,
+	stopIndex,
+} from "@/services/network";
 
 export type ApiStop = {
 	id: string;
@@ -48,18 +54,35 @@ function toApi(
 export async function getStops(
 	agency?: AgencyId,
 	route?: string,
-	near?: Proximity
+	near?: Proximity,
+	includeRoutes = true
 ): Promise<ApiStop[]> {
 	const feeds = agency ? [agency] : AGENCY_IDS;
-	const indexes = await Promise.all(feeds.map(async (feed) => stopIndex(feed)));
 	const stops: ApiStop[] = [];
 
-	for (const [i, id] of feeds.entries()) {
-		const index = indexes[i];
-		for (const row of index.topLevel) {
-			if (route && !index.routes.get(row.stop_id)?.has(route)) continue;
+	if (!includeRoutes && !route) {
+		// The live network map needs stop geometry and names, not the routes-per-
+		// stop join (which scans every trip and stop_time file). Its route shapes
+		// arrive in the separate /routes request; detail panels load route lists
+		// lazily from /stops/:id when a station is selected.
+		const rowsPerFeed = await Promise.all(
+			feeds.map(async (feed) => loadTable(feed, "stops"))
+		);
+		for (const [index, feed] of feeds.entries())
+			for (const row of rowsPerFeed[index])
+				if (!row.parent_station) stops.push(toApi(feed, row, undefined));
+	} else {
+		const indexes = await Promise.all(
+			feeds.map(async (feed) => stopIndex(feed))
+		);
+		for (const [index, feed] of feeds.entries()) {
+			const stopIndexForFeed = indexes[index];
+			for (const row of stopIndexForFeed.topLevel) {
+				if (route && !stopIndexForFeed.routes.get(row.stop_id)?.has(route))
+					continue;
 
-			stops.push(toApi(id, row, index.routes.get(row.stop_id)));
+				stops.push(toApi(feed, row, stopIndexForFeed.routes.get(row.stop_id)));
+			}
 		}
 	}
 
@@ -82,6 +105,37 @@ export async function getStop(
 	if (!resolved) return undefined;
 
 	return toApi(resolved.agency, resolved.row, resolved.index.routes.get(id));
+}
+
+/**
+ * Journey planning only needs a stop's resolved station identity and location;
+ * it does not need its served-route list. Avoid the expensive all-stop-time
+ * `routesByStop` joins just to resolve the two journey endpoints.
+ */
+export async function resolveJourneyStopIds(
+	id: string,
+	agency?: AgencyId
+): Promise<ResolvedStopIds | undefined> {
+	const feeds: readonly AgencyId[] = agency ? [agency] : AGENCY_IDS;
+	for (const feed of feeds) {
+		// eslint-disable-next-line no-await-in-loop
+		const ref = await getStopRef(feed, id);
+		if (!ref?.location) continue;
+		const stop: ApiStop = {
+			id: ref.id,
+			name: ref.name,
+			location: ref.location,
+			geometry: {
+				type: "Point",
+				coordinates: [ref.location.lon, ref.location.lat],
+			},
+			agency: feed,
+			routes: [],
+		};
+		return { agency: feed, stop, ids: [ref.id] };
+	}
+
+	return undefined;
 }
 
 export type ResolvedStopIds = {

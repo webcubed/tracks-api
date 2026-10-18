@@ -130,11 +130,7 @@ export async function resolveStop(
  * station (the spec's `nextStopId: "125"` / `nextStop: "72 St"`), and the
  * station's coordinates stand in for a vehicle that reports no position.
  */
-export async function getStopRef(
-	agency: AgencyId,
-	stopId: string
-): Promise<StopRef | undefined> {
-	const index = await stopIndex(agency);
+function stopRef(index: FeedStops, stopId: string): StopRef | undefined {
 	const row = index.byId.get(stopId);
 	if (!row) return undefined;
 
@@ -153,6 +149,51 @@ export async function getStopRef(
 	};
 }
 
+const coordinateIndex = memoize(async (agency: AgencyId) => {
+	const rows = await loadTable(agency, "stops");
+	const byId = new Map(rows.map((row) => [row.stop_id, row]));
+	const refs = new Map<string, StopRef>();
+
+	for (const row of rows) {
+		const parent = row.parent_station
+			? byId.get(row.parent_station)
+			: undefined;
+		const target = parent ?? row;
+		const lat = Number(target.stop_lat);
+		const lon = Number(target.stop_lon);
+		refs.set(row.stop_id, {
+			id: target.stop_id,
+			name: target.stop_name,
+			location:
+				Number.isFinite(lat) && Number.isFinite(lon) ? { lat, lon } : undefined,
+		});
+	}
+
+	return refs;
+});
+
+/**
+ * Resolve a stop without building the much heavier stop-to-route index. Vehicle
+ * positions and journey rendering only need its name and coordinates; joining
+ * every stop_time to every trip just to retrieve those was the slow path.
+ */
+export async function getStopRef(
+	agency: AgencyId,
+	stopId: string
+): Promise<StopRef | undefined> {
+	const index = await coordinateIndex(agency);
+	return index.get(stopId);
+}
+
+/** Resolve many platforms from the same lightweight cached stop index. */
+export async function getStopRefs(
+	agency: AgencyId,
+	stopIds: readonly string[]
+): Promise<Map<string, StopRef | undefined>> {
+	const index = await coordinateIndex(agency);
+	return new Map(stopIds.map((id) => [id, index.get(id)]));
+}
+
 /** Platform ids below a station; `stop_times` only ever reference those. */
 export function childIds(index: FeedStops, parentId: string): string[] {
 	const ids: string[] = [];
@@ -169,8 +210,16 @@ export function childIds(index: FeedStops, parentId: string): string[] {
  * nothing portable across feeds (subway, LIRR and bus number it differently);
  * the geometry is the same fact for all of them.
  */
-export const directionIndex = memoize(async (agency: AgencyId) => {
+async function shapeDirections(
+	agency: AgencyId,
+	shapeIds?: readonly string[]
+): Promise<Map<string, string>> {
+	if (shapeIds?.length === 0) return new Map();
+
 	const shapesUrl = getStaticFeedUrl(agency, "shapes");
+	const filter = shapeIds
+		? `WHERE shape_id IN (${shapeIds.map(() => "?").join(", ")})`
+		: "";
 	const rows = await runQuery<ShapeEnds>(
 		`SELECT shape_id,
 			arg_min(CAST(shape_pt_lon AS DOUBLE), CAST(shape_pt_sequence AS INTEGER)) AS lon0,
@@ -178,14 +227,37 @@ export const directionIndex = memoize(async (agency: AgencyId) => {
 			arg_max(CAST(shape_pt_lon AS DOUBLE), CAST(shape_pt_sequence AS INTEGER)) AS lon1,
 			arg_max(CAST(shape_pt_lat AS DOUBLE), CAST(shape_pt_sequence AS INTEGER)) AS lat1
 		 FROM read_parquet('${shapesUrl}')
-		 GROUP BY shape_id`
+		 ${filter}
+		 GROUP BY shape_id`,
+		...(shapeIds ?? [])
 	);
 
 	const index = new Map<string, string>();
 	for (const shape of rows) index.set(shape.shape_id, directionOf(shape));
 
 	return index;
-});
+}
+
+export const directionIndex = memoize(async (agency: AgencyId) =>
+	shapeDirections(agency)
+);
+
+const selectedDirectionIndex = memoize(
+	async (agency: AgencyId, shapeIds: readonly string[]) =>
+		shapeDirections(agency, shapeIds),
+	5 * 60_000
+);
+
+/** Directions for selected journey shapes, instead of aggregating every shape. */
+export async function directionIndexForShapes(
+	agency: AgencyId,
+	shapeIds: readonly string[]
+): Promise<Map<string, string>> {
+	const ids = [...new Set(shapeIds)].toSorted();
+	if (ids.length === 0) return new Map();
+
+	return selectedDirectionIndex(agency, ids);
+}
 
 type ShapeEnds = {
 	shape_id: string;
@@ -211,29 +283,49 @@ function directionOf(shape: ShapeEnds): string {
  * usable coordinates, for proximity matching. Reads the stops table straight,
  * skipping the heavier join-backed index the other endpoints need.
  */
-export async function getStations(agency: AgencyId): Promise<Station[]> {
+export const getStations = memoize(
+	async (agency: AgencyId): Promise<Station[]> => {
+		const rows = await loadTable(agency, "stops");
+
+		return rows.flatMap((row) => {
+			if (row.parent_station) return [];
+
+			const lat = Number(row.stop_lat);
+			const lon = Number(row.stop_lon);
+
+			return Number.isFinite(lat) && Number.isFinite(lon)
+				? [{ id: row.stop_id, location: { lat, lon } }]
+				: [];
+		});
+	}
+);
+
+/**
+ * Lightweight `stop_id` → station + platform ids. Journey scans use this to
+ * build boardable queries; pulling in the full routesByStop stop_times/trips
+ * join just to find parent stations made the first plan request needlessly
+ * expensive.
+ */
+const stopIdsByStation = memoize(async (agency: AgencyId) => {
 	const rows = await loadTable(agency, "stops");
+	const grouped = new Map<string, string[]>();
+	for (const row of rows) {
+		const stationId = row.parent_station ?? row.stop_id;
+		const ids = grouped.get(stationId);
+		if (ids) ids.push(row.stop_id);
+		else grouped.set(stationId, [row.stop_id]);
+	}
 
-	return rows.flatMap((row) => {
-		if (row.parent_station) return [];
-
-		const lat = Number(row.stop_lat);
-		const lon = Number(row.stop_lon);
-
-		return Number.isFinite(lat) && Number.isFinite(lon)
-			? [{ id: row.stop_id, location: { lat, lon } }]
-			: [];
-	});
-}
+	return grouped;
+});
 
 /** The station's own id plus its platforms; stop_times reference platforms. */
 export async function stopIdsOf(
 	agency: AgencyId,
 	stationId: string
 ): Promise<string[]> {
-	const index = await stopIndex(agency);
-
-	return [stationId, ...childIds(index, stationId)];
+	const stations = await stopIdsByStation(agency);
+	return stations.get(stationId) ?? [stationId];
 }
 
 /**
@@ -245,14 +337,15 @@ export const transferIndex = memoize(async (agency: AgencyId) => {
 	const index: TransferIndex = new Map();
 	if (agency !== "subway" && agency !== "lirr") return index;
 
-	const [rows, stops] = await Promise.all([
+	const [rows, stopRows] = await Promise.all([
 		loadTable(agency, "transfers"),
-		stopIndex(agency),
+		loadTable(agency, "stops"),
 	]);
+	const byId = new Map(stopRows.map((row) => [row.stop_id, row]));
 
 	for (const row of rows) {
-		const fromRow = stops.byId.get(row.from_stop_id);
-		const toRow = stops.byId.get(row.to_stop_id);
+		const fromRow = byId.get(row.from_stop_id);
+		const toRow = byId.get(row.to_stop_id);
 		if (!fromRow || !toRow) continue;
 
 		// GTFS uses "" or NULL for top-level stops' parent_station; both mean

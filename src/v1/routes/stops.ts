@@ -1,5 +1,6 @@
 import type { Proximity } from "@/services/stops";
 import { isValidDate, today } from "@/lib/time";
+import { getDepartures } from "@/services/departures";
 import { getSchedule } from "@/services/schedule";
 import { getStop, getStops } from "@/services/stops";
 import { optionalAgency } from "@/v1/middleware";
@@ -22,7 +23,13 @@ stops.get("/", optionalAgency, async (c) => {
 		);
 	}
 
-	const data = await getStops(c.get("agency"), route, parsed.near);
+	const includeRoutes = c.req.query("includeRoutes") !== "false";
+	const data = await getStops(
+		c.get("agency"),
+		route,
+		parsed.near,
+		includeRoutes
+	);
 	return c.json({ data });
 });
 
@@ -58,6 +65,27 @@ stops.get("/:id/schedule", optionalAgency, async (c) => {
 	}
 
 	return c.json({ data: schedule });
+});
+
+// The station departure board, with track assignments from the LIRR tracking
+// system. Stops that publish no station code answer with an empty board.
+stops.get("/:id/departures", optionalAgency, async (c) => {
+	const id = c.req.param("id");
+	const board = await getDepartures(id, c.get("agency"));
+
+	if (!board) {
+		return c.json(
+			{
+				error: {
+					code: "STOP_NOT_FOUND",
+					message: `No stop found with id '${id}'`,
+				},
+			},
+			404
+		);
+	}
+
+	return c.json({ data: board });
 });
 
 stops.get("/:id", optionalAgency, async (c) => {

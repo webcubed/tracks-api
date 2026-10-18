@@ -6,35 +6,52 @@ import type {
 	TimelineRow,
 } from "@/services/journey/types";
 import type { Station, StopRef } from "@/services/network";
-import { AGENCY_IDS, getStaticFeedUrl } from "@/constants";
+import { AGENCY_IDS, getJourneyIndexUrl, getStaticFeedUrl } from "@/constants";
+import { memoize } from "@/lib/memoize";
 import { runQuery } from "@/lib/parquet";
 import { clockOf, clockSeconds } from "@/lib/time";
 import { admit, cellKey, drainWalks } from "@/services/journey/labels";
-import { RAIL_FEEDS, TRANSFER_S, WINDOW_S } from "@/services/journey/types";
-import { getStations, getStopRef, stopIdsOf } from "@/services/network";
+import { TRANSFER_S, WINDOW_S } from "@/services/journey/types";
+import { getStations, getStopRefs, stopIdsOf } from "@/services/network";
 import { activeServices } from "@/services/schedule";
 
 /**
- * Board the rail feeds from every frontier label (those carrying exactly
+ * Board every ride feed from each frontier label (those carrying exactly
  * `round - 1` rides): fetch the timelines of trips they can catch and ride
  * each one forward, admitting labels at every stop it makes.
  */
 export async function boardRound(
 	search: Search,
 	round: number,
+	feeds: readonly AgencyId[],
 	date: string
 ): Promise<number> {
-	const hasFrontier = [...search.labels.values()]
-		.flat()
-		.some((label) => label.rides === round - 1);
-	if (!hasFrontier) return 0;
+	const frontierByFeed = new Map<AgencyId, Label[]>();
+	for (const labels of search.labels.values()) {
+		for (const label of labels) {
+			if (label.rides !== round - 1) continue;
+			const frontier = frontierByFeed.get(label.feed);
+			if (frontier) frontier.push(label);
+			else frontierByFeed.set(label.feed, [label]);
+		}
+	}
+
+	if (frontierByFeed.size === 0) return 0;
 
 	let added = 0;
-	// Feeds run sequentially: both mutate the shared label set, and parallel
-	// scans of the same frontier would race the walk queue.
-	for (const feed of RAIL_FEEDS) {
+	// One feed at a time. They share the process's single DuckDB connection, so
+	// overlapping the scans only queues them behind one another — measured
+	// three times slower end to end than reading them in turn.
+	for (const feed of feeds) {
+		const frontier = frontierByFeed.get(feed);
+		if (!frontier) continue;
 		// eslint-disable-next-line no-await-in-loop
-		added += await boardFeed(search, feed, round, date);
+		const scan = await planFeed(feed, frontier, date);
+		if (!scan) continue;
+
+		for (const rows of scan.trips.values()) {
+			added += rideTrip(search, { ...scan, rows, round });
+		}
 	}
 
 	drainWalks(search);
@@ -42,15 +59,21 @@ export async function boardRound(
 	return added;
 }
 
-async function boardFeed(
-	search: Search,
-	feed: AgencyId,
-	round: number,
-	date: string
-): Promise<number> {
-	const frontierInFeed = frontierFor(search, feed, round);
-	if (frontierInFeed.length === 0) return 0;
+type FeedScan = {
+	feed: AgencyId;
+	byStation: Map<string, Label[]>;
+	trips: Map<string, TimelineRow[]>;
+	stationOf: Map<string, StopRef | undefined>;
+};
 
+/** One feed's round: the frontier's stop ids and the timelines of trips
+ * boardable from them. New labels belong to a later round and cannot board
+ * during this scan. */
+async function planFeed(
+	feed: AgencyId,
+	frontierInFeed: Label[],
+	date: string
+): Promise<FeedScan | undefined> {
 	const byStation = new Map<string, Label[]>();
 	for (const label of frontierInFeed) {
 		const existing = byStation.get(label.station);
@@ -62,26 +85,21 @@ async function boardFeed(
 	const stationLists = await Promise.all(
 		[...byStation.keys()].map(async (id) => stopIdsOf(feed, id))
 	);
-	const ids = stationLists.flat();
+	const ids = [...new Set(stationLists.flat())].toSorted();
+	if (ids.length === 0) return undefined;
 
-	const trips = await timelines(feed, ids, activeServices(feed, date), {
-		min: Math.max(0, earliest - TRANSFER_S),
-		max: earliest + WINDOW_S,
-	});
+	// Timetable rows are minute-granularity. Expand each search window to
+	// five-minute boundaries so nearby requests reuse the same remote scan;
+	// rideTrip still checks every departure against the exact label time.
+	const window = {
+		min: Math.max(0, Math.floor((earliest - TRANSFER_S) / 300) * 300),
+		max: Math.ceil((earliest + WINDOW_S) / 300) * 300,
+	};
+	const trips = await timelines(feed, ids, activeServices(feed, date), window);
 	const stationOf = await stationIndexByStop(feed, trips);
 
-	let added = 0;
-	for (const rows of trips.values()) {
-		added += rideTrip(search, { feed, rows, byStation, stationOf, round });
-	}
-
-	return added;
+	return { feed, byStation, trips, stationOf };
 }
-
-const frontierFor = (search: Search, feed: AgencyId, round: number): Label[] =>
-	[...search.labels.values()]
-		.flat()
-		.filter((label) => label.feed === feed && label.rides === round - 1);
 
 type RideScan = {
 	feed: AgencyId;
@@ -98,67 +116,75 @@ type RideScan = {
  */
 function rideTrip(search: Search, scan: RideScan): number {
 	const { feed, rows, byStation, stationOf, round } = scan;
-	let board = -1;
-	let boardLabel: Label | undefined;
+	// One scheduled trip may be reachable from several useful route patterns at
+	// a transfer point. Record each label's first boardable stop; choosing only
+	// the earliest label here erased alternatives before ranking got a chance to
+	// show them (e.g. LIRR → Penn and Q28 → 7 converging on the same train).
+	const boarding = new Map<Label, number>();
 
-	for (const [i, row] of rows.entries()) {
+	for (const [index, row] of rows.entries()) {
 		if (row.departure_time === "") continue;
 
 		const ref = stationOf.get(row.stop_id);
 		if (!ref) continue;
 
 		const departure = clockSeconds(row.departure_time);
-		boardLabel = byStation
-			.get(ref.id)
-			?.filter((label) => departure - transferBuffer(label) >= label.arrival)
-			.toSorted((a, b) => a.arrival - b.arrival || a.rides - b.rides)[0];
-
-		if (boardLabel) {
-			board = i;
-			break;
+		for (const label of byStation.get(ref.id) ?? []) {
+			if (
+				!boarding.has(label) &&
+				departure - transferBuffer(label) >= label.arrival
+			)
+				boarding.set(label, index);
 		}
 	}
 
-	if (boardLabel === undefined) return 0;
-
-	const boardRow = rows[board];
 	let added = 0;
+	for (const [boardLabel, boardIndex] of boarding) {
+		const boardRow = rows[boardIndex];
+		for (let index = boardIndex + 1; index < rows.length; index++) {
+			const row = rows[index];
+			if (row.arrival_time === "") continue;
 
-	for (const row of rows.slice(board + 1)) {
-		if (row.arrival_time === "") continue;
+			const ref = stationOf.get(row.stop_id);
+			if (!ref?.location) continue;
 
-		const ref = stationOf.get(row.stop_id);
-		if (!ref?.location) continue;
-
-		const accepted = admit(search, {
-			feed,
-			station: ref.id,
-			lat: ref.location.lat,
-			lon: ref.location.lon,
-			arrival: clockSeconds(row.arrival_time),
-			rides: round,
-			round,
-			via: {
-				kind: "ride",
-				leg: {
-					agency: feed,
-					route: row.route_id,
-					headsign: row.trip_headsign ?? undefined,
-					tripId: row.trip_id,
-					shapeId: row.shape_id,
-					boardStop: boardRow.stop_id,
-					boardTime: boardRow.departure_time,
-					alightStop: row.stop_id,
-					alightTime: row.arrival_time,
+			const accepted = admit(search, {
+				feed,
+				station: ref.id,
+				lat: ref.location.lat,
+				lon: ref.location.lon,
+				arrival: clockSeconds(row.arrival_time),
+				rides: round,
+				pattern: appendRoute(boardLabel.pattern, feed, row.route_id),
+				round,
+				via: {
+					kind: "ride",
+					leg: {
+						agency: feed,
+						route: row.route_id,
+						headsign: row.trip_headsign ?? undefined,
+						tripId: row.trip_id,
+						shapeId: row.shape_id,
+						boardStop: boardRow.stop_id,
+						boardTime: boardRow.departure_time,
+						alightStop: row.stop_id,
+						alightTime: row.arrival_time,
+					},
+					from: boardLabel,
 				},
-				from: boardLabel,
-			},
-		});
+			});
 
-		if (accepted) added++;
+			if (accepted) added++;
+		}
 	}
 
 	return added;
+}
+
+/** Add the actual line ridden; keep route order as part of the search label. */
+function appendRoute(pattern: string, feed: AgencyId, route: string): string {
+	const leg = `${feed}:${route}`;
+	return pattern ? `${pattern}|${leg}` : leg;
 }
 
 /** Boarding requires a minute when the label came from another ride. */
@@ -167,50 +193,59 @@ function transferBuffer(label: Label): number {
 }
 
 /**
- * Full stop-by-stop timelines of every active trip boardable from `stopIds`
- * inside the departure window; rows come back grouped by trip, in stop order.
+ * Full stop-by-stop timelines of active trips boardable from `stopIds` inside
+ * the departure window; nearby identical scans share this five-minute cache.
  */
-async function timelines(
-	agency: AgencyId,
-	stopIds: readonly string[],
-	service: { sql: string; parameters: string[] },
-	window: { min: number; max: number }
-): Promise<Map<string, TimelineRow[]>> {
-	const stopTimesUrl = getStaticFeedUrl(agency, "stop_times");
-	const tripsUrl = getStaticFeedUrl(agency, "trips");
+const timelines = memoize(
+	async (
+		agency: AgencyId,
+		stopIds: readonly string[],
+		service: { sql: string; parameters: string[] },
+		window: { min: number; max: number }
+	): Promise<Map<string, TimelineRow[]>> => {
+		const indexBase = process.env.JOURNEY_INDEX_URL_BASE?.replace(/\/$/, "");
+		const boardingUrl = indexBase
+			? `${indexBase}/${agency}_journey_boarding.parquet`
+			: getJourneyIndexUrl(agency, "boarding");
+		const timelineUrl = indexBase
+			? `${indexBase}/${agency}_journey_timeline.parquet`
+			: getJourneyIndexUrl(agency, "timeline");
+		const stopTimesUrl = getStaticFeedUrl(agency, "stop_times");
+		const tripsUrl = getStaticFeedUrl(agency, "trips");
+		const rows = await runQuery<TimelineRow>(
+			`WITH boardable_trips AS (
+				SELECT DISTINCT b.trip_id
+				FROM read_parquet('${boardingUrl}') b
+				WHERE b.stop_id IN (${stopIds.map(() => "?").join(", ")})
+				  AND b.departure_time >= ? AND b.departure_time <= ?
+				  AND b.service_id IN (${service.sql})
+			)
+			SELECT t.trip_id, t.stop_id, t.arrival_time, t.departure_time,
+				t.route_id, t.trip_headsign, t.shape_id
+			FROM read_parquet('${timelineUrl}') t
+			JOIN boardable_trips b ON b.trip_id = t.trip_id
+			ORDER BY t.trip_id, CAST(t.stop_sequence AS INTEGER)`,
+			...stopIds,
+			clockOf(window.min),
+			clockOf(window.max),
+			...service.parameters
+		);
 
-	const rows = await runQuery<TimelineRow>(
-		`SELECT st.trip_id, st.stop_id, st.arrival_time, st.departure_time,
-			t.route_id, t.trip_headsign, t.shape_id
-		 FROM read_parquet('${stopTimesUrl}') st
-		 JOIN read_parquet('${tripsUrl}') t ON t.trip_id = st.trip_id
-		 WHERE st.trip_id IN (
-			 SELECT s.trip_id FROM read_parquet('${stopTimesUrl}') s
-			 JOIN read_parquet('${tripsUrl}') t2 ON t2.trip_id = s.trip_id
-			 WHERE s.stop_id IN (${stopIds.map(() => "?").join(", ")})
-			   AND s.departure_time >= ? AND s.departure_time <= ?
-			   AND t2.service_id IN (${service.sql})
-		 )
-		 ORDER BY st.trip_id, CAST(st.stop_sequence AS INTEGER)`,
-		...stopIds,
-		clockOf(window.min),
-		clockOf(window.max),
-		...service.parameters
-	);
+		const trips = new Map<string, TimelineRow[]>();
+		for (const row of rows) {
+			let timeline = trips.get(row.trip_id);
+			if (!timeline) {
+				timeline = [];
+				trips.set(row.trip_id, timeline);
+			}
 
-	const trips = new Map<string, TimelineRow[]>();
-	for (const row of rows) {
-		let timeline = trips.get(row.trip_id);
-		if (!timeline) {
-			timeline = [];
-			trips.set(row.trip_id, timeline);
+			timeline.push(row);
 		}
 
-		timeline.push(row);
-	}
-
-	return trips;
-}
+		return trips;
+	},
+	5 * 60_000
+);
 
 /** Platform rows to the station they belong to, resolved in one batch. */
 async function stationIndexByStop(
@@ -220,21 +255,14 @@ async function stationIndexByStop(
 	const stopIds = [
 		...new Set([...legs.values()].flat().map((row) => row.stop_id)),
 	];
-	const refs = await Promise.all(
-		stopIds.map(async (stopId) => getStopRef(agency, stopId))
-	);
-
-	const stations = new Map<string, StopRef | undefined>();
-	for (const [i, stopId] of stopIds.entries()) stations.set(stopId, refs[i]);
-
-	return stations;
+	return getStopRefs(agency, stopIds);
 }
 
 /**
  * All feeds' stations in coarse spatial grids plus an id index, so walking
  * transfers are local lookups instead of all-pairs scans.
  */
-export async function stationGrids(): Promise<Network> {
+export const stationGrids = memoize(async (): Promise<Network> => {
 	const stationsPerFeed = await Promise.all(
 		AGENCY_IDS.map(async (feed) => getStations(feed))
 	);
@@ -258,4 +286,4 @@ export async function stationGrids(): Promise<Network> {
 	}
 
 	return { grids, byId };
-}
+});

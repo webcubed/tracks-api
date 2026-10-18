@@ -24,6 +24,9 @@ async function open(): Promise<DuckDBConnection> {
 	await db.run("LOAD httpfs");
 	await db.run("INSTALL json");
 	await db.run("LOAD json");
+	// Repeated journey rounds read the same remote Parquet footers; retain their
+	// metadata in DuckDB's per-connection object cache.
+	await db.run("PRAGMA enable_object_cache");
 	console.info(
 		`[startup] DuckDB ready in ${((Date.now() - startedAt) / 1000).toFixed(1)}s; warming up static data for all feeds now — please wait for the per-feed ready messages.`
 	);

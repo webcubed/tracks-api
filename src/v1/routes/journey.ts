@@ -2,7 +2,7 @@ import { isAgencyId } from "@/constants";
 import { isValidDate, today } from "@/lib/time";
 import { planJourney } from "@/services/journey";
 import { isoNewYork } from "@/services/realtime";
-import { resolveStopIds } from "@/services/stops";
+import { resolveJourneyStopIds } from "@/services/stops";
 import { Hono } from "hono";
 
 export const journey = new Hono();
@@ -88,7 +88,7 @@ journey.get("/", async (c) => {
 		);
 	}
 
-	const from = await resolveStopIds(fromId, fromAgency);
+	const from = await resolveJourneyStopIds(fromId, fromAgency);
 	if (!from) {
 		return c.json(
 			{
@@ -101,7 +101,7 @@ journey.get("/", async (c) => {
 		);
 	}
 
-	const to = await resolveStopIds(toId, toAgency);
+	const to = await resolveJourneyStopIds(toId, toAgency);
 	if (!to) {
 		return c.json(
 			{

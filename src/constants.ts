@@ -178,3 +178,11 @@ export function getStaticFeedUrl<T extends keyof AgencyTableMap>(
 ) {
 	return `https://github.com/webcubed/tracks-api/releases/download/latest-gtfs/${agency}_${table}.parquet`;
 }
+
+/** Compact, purpose-built timetable indexes generated alongside each GTFS release. */
+export function getJourneyIndexUrl(
+	agency: AgencyId,
+	index: "boarding" | "timeline"
+): string {
+	return `https://github.com/webcubed/tracks-api/releases/download/latest-gtfs/${agency}_journey_${index}.parquet`;
+}

@@ -1,3 +1,4 @@
+import type { AgencyId } from "@/constants";
 import type {
 	ItineraryDraft,
 	Journey,
@@ -6,9 +7,10 @@ import type {
 	LegDesc,
 	Search,
 } from "@/services/journey/types";
+import type { StopRef } from "@/services/network";
 import { clockOf, clockSeconds } from "@/lib/time";
-import { MAX_ITINERARIES, WALK_S } from "@/services/journey/types";
-import { directionIndex, getStopRef } from "@/services/network";
+import { MAX_ITINERARIES } from "@/services/journey/types";
+import { directionIndexForShapes, getStopRefs } from "@/services/network";
 
 /** Destination labels become drafts, ranked by arrival. A label reached by
  * walking only matters when no ride reaches the destination: a trailing
@@ -18,19 +20,41 @@ export function rankDestinations(search: Search): ItineraryDraft[] {
 	const byArrival = dest.toSorted((a, b) => a.arrival - b.arrival);
 	const rideArrivals = byArrival.filter((label) => label.via.kind === "ride");
 	const ranked = rideArrivals.length > 0 ? rideArrivals : byArrival;
-	const seen = new Set<string>();
-	const drafts: ItineraryDraft[] = [];
-
-	for (const label of ranked) {
+	const candidates = ranked.flatMap((label) => {
 		const draft = itineraryFrom(search, label);
-		if (!draft || draft.legs.length === 0) continue;
+		return draft && draft.legs.length > 0
+			? [{ draft, arrival: label.arrival }]
+			: [];
+	});
+	const drafts: ItineraryDraft[] = [];
+	const seenTrips = new Set<string>();
+	const seenPatterns = new Set<string>();
 
-		const fingerprint = `${label.arrival}|${draft.legs.at(-1)?.tripId ?? ""}`;
-		if (seen.has(fingerprint)) continue;
+	// First take the fastest journey for each distinct route pattern. Otherwise
+	// the first five may all be the same LIRR train to Penn, followed by the
+	// 1/2/3 from the same transfer, hiding a faster Q28→7 or Grand Central→S
+	// option just below them. Then fill remaining slots with the next scheduled
+	// departures, preserving the useful "next train" behaviour.
+	for (const { draft, arrival } of candidates) {
+		const pattern = draft.legs
+			.map((leg) => `${leg.agency}:${leg.route}`)
+			.join("|");
+		const tripKey = `${arrival}|${draft.legs.at(-1)?.tripId ?? ""}`;
+		if (seenPatterns.has(pattern) || seenTrips.has(tripKey)) continue;
 
-		seen.add(fingerprint);
+		seenPatterns.add(pattern);
+		seenTrips.add(tripKey);
 		drafts.push(draft);
+		if (drafts.length === MAX_ITINERARIES) return drafts;
+	}
+
+	for (const { draft, arrival } of candidates) {
 		if (drafts.length === MAX_ITINERARIES) break;
+		const tripKey = `${arrival}|${draft.legs.at(-1)?.tripId ?? ""}`;
+		if (seenTrips.has(tripKey)) continue;
+
+		seenTrips.add(tripKey);
+		drafts.push(draft);
 	}
 
 	return drafts;
@@ -64,9 +88,13 @@ function itineraryFrom(
 
 	if (legs.length === 0) return undefined;
 
+	// The origin label is still `current`: when the chain begins with one or
+	// more implicit walks, count those minutes from the requested departure,
+	// instead of backing out just the first walk and under-reporting a transfer
+	// path such as origin → bus stop → subway.
 	const departure =
 		ordered[0]?.via.kind === "walk"
-			? ordered[0].arrival - WALK_S
+			? current.arrival
 			: clockSeconds(legs[0].boardTime);
 
 	return { departure, arrival: dest.arrival, legs };
@@ -75,33 +103,70 @@ function itineraryFrom(
 export async function renderItineraries(
 	drafts: ItineraryDraft[]
 ): Promise<Journey[]> {
-	const rendered = await Promise.all(
-		drafts.map(async (draft) => ({
-			...draft,
-			legs: await Promise.all(draft.legs.map(async (leg) => renderLeg(leg))),
-		}))
-	);
+	const legs = drafts.flatMap((draft) => draft.legs);
+	const stopsByAgency = new Map<AgencyId, Set<string>>();
+	const shapesByAgency = new Map<AgencyId, Set<string>>();
+	for (const leg of legs) {
+		let stops = stopsByAgency.get(leg.agency);
+		if (!stops) {
+			stops = new Set();
+			stopsByAgency.set(leg.agency, stops);
+		}
+		stops.add(leg.boardStop);
+		stops.add(leg.alightStop);
 
-	return rendered.map((draft) => ({
+		if (leg.shapeId) {
+			let shapes = shapesByAgency.get(leg.agency);
+			if (!shapes) {
+				shapes = new Set();
+				shapesByAgency.set(leg.agency, shapes);
+			}
+			shapes.add(leg.shapeId);
+		}
+	}
+
+	const [refsEntries, directionEntries] = await Promise.all([
+		Promise.all(
+			[...stopsByAgency].map(
+				async ([agency, stopIds]) =>
+					[agency, await getStopRefs(agency, [...stopIds])] as const
+			)
+		),
+		Promise.all(
+			[...shapesByAgency].map(
+				async ([agency, shapeIds]) =>
+					[agency, await directionIndexForShapes(agency, [...shapeIds])] as const
+			)
+		),
+	]);
+
+	const refsByAgency = new Map(refsEntries);
+	const directionsByAgency = new Map(directionEntries);
+
+	return drafts.map((draft) => ({
 		departureTime: clockOf(draft.departure),
 		arrivalTime: clockOf(draft.arrival),
 		durationMinutes: Math.round((draft.arrival - draft.departure) / 60),
-		legs: draft.legs,
+		legs: draft.legs.map((leg) =>
+			renderLeg(leg, refsByAgency, directionsByAgency)
+		),
 	}));
 }
 
-async function renderLeg(leg: LegDesc): Promise<JourneyLeg> {
-	const [fromRef, toRef, directions] = await Promise.all([
-		getStopRef(leg.agency, leg.boardStop),
-		getStopRef(leg.agency, leg.alightStop),
-		directionIndex(leg.agency),
-	]);
+function renderLeg(
+	leg: LegDesc,
+	refsByAgency: Map<AgencyId, Map<string, StopRef | undefined>>,
+	directionsByAgency: Map<AgencyId, Map<string, string>>
+): JourneyLeg {
+	const refs = refsByAgency.get(leg.agency);
+	const fromRef = refs?.get(leg.boardStop);
+	const toRef = refs?.get(leg.alightStop);
 
 	return {
 		route: leg.route,
 		agency: leg.agency,
 		headsign: leg.headsign,
-		direction: directions.get(leg.shapeId ?? "") ?? "",
+		direction: directionsByAgency.get(leg.agency)?.get(leg.shapeId ?? "") ?? "",
 		tripId: leg.tripId,
 		from: {
 			id: fromRef?.id ?? leg.boardStop,
