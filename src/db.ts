@@ -13,7 +13,10 @@ export async function getDb(): Promise<DuckDBConnection> {
 	return connection;
 }
 
-const DUCKDB_MEMORY_LIMIT = process.env.DUCKDB_MEMORY_LIMIT ?? "96MB";
+// 64 MB measured as the sweet spot for 512 MB hosts: wide timetable scans
+// still complete comfortably, and the peak RSS of a multi-feed journey plan
+// stays well clear of the container ceiling (96 MB pushed it to the edge).
+const DUCKDB_MEMORY_LIMIT = process.env.DUCKDB_MEMORY_LIMIT ?? "64MB";
 const DUCKDB_THREADS = process.env.DUCKDB_THREADS ?? "1";
 
 async function open(): Promise<DuckDBConnection> {

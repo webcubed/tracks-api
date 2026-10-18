@@ -323,31 +323,30 @@ async function queryTimelinesFallback(
 	const stopTimesUrl = getStaticFeedUrl(agency, "stop_times");
 	const tripsUrl = getStaticFeedUrl(agency, "trips");
 
+	// Semi-join shape: find the boardable trip ids first (a small distinct
+	// set), then pull only those trips' stop rows. The window-function shape
+	// this replaces buffered every active stop_time of the day — ~800k rows for
+	// a bus feed — to decide `is_boardable`, which is what pushed the process
+	// past 512 MB on Render's free tier.
 	return runQuery<TimelineRow>(
 		`WITH active_trips AS (
 			SELECT trip_id, route_id, trip_headsign, shape_id
 			FROM read_parquet('${tripsUrl}')
 			WHERE service_id IN (${service.sql})
 		),
-		active_stop_times AS (
-			SELECT st.trip_id, st.stop_id, st.arrival_time, st.departure_time, st.stop_sequence,
-				a.route_id, a.trip_headsign, a.shape_id,
-				max(
-					CASE
-						WHEN st.stop_id IN (${stopIds.map(() => "?").join(", ")})
-							AND st.departure_time >= ? AND st.departure_time <= ?
-						THEN 1
-						ELSE 0
-					END
-				) OVER (PARTITION BY st.trip_id) AS is_boardable
+		boardable_trips AS (
+			SELECT DISTINCT st.trip_id
 			FROM read_parquet('${stopTimesUrl}') st
 			JOIN active_trips a ON a.trip_id = st.trip_id
+			WHERE st.stop_id IN (${stopIds.map(() => "?").join(", ")})
+			  AND st.departure_time >= ? AND st.departure_time <= ?
 		)
-		SELECT trip_id, stop_id, arrival_time, departure_time,
-			route_id, trip_headsign, shape_id
-		FROM active_stop_times
-		WHERE is_boardable = 1
-		ORDER BY trip_id, CAST(stop_sequence AS INTEGER)`,
+		SELECT st.trip_id, st.stop_id, st.arrival_time, st.departure_time,
+			a.route_id, a.trip_headsign, a.shape_id
+		FROM read_parquet('${stopTimesUrl}') st
+		JOIN boardable_trips b ON b.trip_id = st.trip_id
+		JOIN active_trips a ON a.trip_id = st.trip_id
+		ORDER BY st.trip_id, CAST(st.stop_sequence AS INTEGER)`,
 		...service.parameters,
 		...stopIds,
 		clockOf(window.min),
@@ -423,7 +422,11 @@ const timelines = memoize(
 		return trips;
 	},
 	5 * 60_000,
-	24
+	// Each entry holds every stop row of every boardable trip in a window —
+	// tens of megabytes for a wide bus scan — so the cache is capped low. A
+	// journey shares its scans across rounds; later ones miss and rescan rather
+	// than hold the peak footprint of a 512 MB host hostage.
+	6
 );
 
 /** Platform rows to the station they belong to, resolved in one batch. */

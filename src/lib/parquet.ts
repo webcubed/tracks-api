@@ -10,9 +10,14 @@ let queryTail = Promise.resolve();
  * placeholders; never splice user input into `sql`.
  *
  * Queries are serialized onto `queryTail`: the process shares one DuckDB
- * connection with a bounded 96 MB memory limit, so running queries in turn
+ * connection with a bounded 64 MB memory limit, so running queries in turn
  * prevents concurrent requests from multiplying peak native memory on 512 MB
  * hosts (e.g. Render free tier).
+ *
+ * Results are read through the bundled result reader rather than converted
+ * chunk by chunk: hand-rolled `stream()` + `fetchChunk()` loops measured
+ * worse here (per-chunk native churn outlived its usefulness at these row
+ * counts), and the reader is the shape the library is tested around.
  */
 export async function runQuery<T>(
 	sql: string,
