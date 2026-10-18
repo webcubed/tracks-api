@@ -107,6 +107,43 @@ const fetchCountdown = memoize(
 	10_000
 );
 
+/**
+ * Live train locations across a railroad (`LIRR` or `MNR`), including consists,
+ * stops, track assignments, and OTP status.
+ */
+const fetchLocations = memoize(
+	async (railroad: string, geometry: string): Promise<unknown> => {
+		const url = new URL(`${RADAR_BASE}/locations`);
+		url.searchParams.set("railroad", railroad);
+		url.searchParams.set("geometry", geometry);
+
+		let response: Response;
+		try {
+			response = await fetch(url, {
+				headers: { "Accept-Version": "3.0" },
+				signal: AbortSignal.timeout(15_000),
+			});
+		} catch (error) {
+			throw new RadarUnavailableError(
+				`tracking system request failed: ${error instanceof Error ? error.message : String(error)}`
+			);
+		}
+
+		if (response.status >= 300) {
+			throw new RadarUnavailableError(
+				`tracking system responded ${response.status}`
+			);
+		}
+
+		try {
+			return await response.json();
+		} catch {
+			throw new RadarUnavailableError("tracking system returned invalid JSON");
+		}
+	},
+	10_000
+);
+
 /** The raw Solari departure list for a three-letter station code. */
 export async function getSolari(code: string): Promise<unknown> {
 	return fetchSolari(code);
@@ -118,4 +155,12 @@ export async function getCountdown(
 	options: { includePassed: boolean; hours: number }
 ): Promise<unknown> {
 	return fetchCountdown(code, options.includePassed, options.hours);
+}
+
+/** The raw live train locations list for a railroad. */
+export async function getLocations(
+	railroad = "LIRR",
+	geometry = "TRACK_TURF"
+): Promise<unknown> {
+	return fetchLocations(railroad, geometry);
 }

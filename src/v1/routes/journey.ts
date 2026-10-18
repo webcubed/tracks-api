@@ -1,3 +1,4 @@
+import type { JourneyMode, JourneyPreference } from "@/services/journey";
 import { isAgencyId } from "@/constants";
 import { isValidDate, today } from "@/lib/time";
 import { planJourney } from "@/services/journey";
@@ -6,6 +7,16 @@ import { resolveJourneyStopIds } from "@/services/stops";
 import { Hono } from "hono";
 
 export const journey = new Hono();
+
+function isPreference(value: string): value is JourneyPreference {
+	return (
+		value === "fastest" || value === "fewerTransfers" || value === "lessWalking"
+	);
+}
+
+function isJourneyMode(value: string): value is JourneyMode {
+	return value === "subway" || value === "rail" || value === "bus";
+}
 
 journey.get("/", async (c) => {
 	const fromId = c.req.query("from");
@@ -62,6 +73,49 @@ journey.get("/", async (c) => {
 		);
 	}
 
+	const rawPreference = c.req.query("preference");
+	const preference: JourneyPreference =
+		rawPreference === undefined
+			? "fastest"
+			: isPreference(rawPreference)
+				? rawPreference
+				: "fastest";
+	if (rawPreference !== undefined && !isPreference(rawPreference)) {
+		return c.json(
+			{
+				error: {
+					code: "INVALID_PREFERENCE",
+					message:
+						"preference must be 'fastest', 'fewerTransfers', or 'lessWalking'",
+				},
+			},
+			400
+		);
+	}
+
+	const rawModes = c.req.query("modes");
+	let modes: Set<JourneyMode> | undefined;
+	if (rawModes !== undefined && rawModes.trim() !== "") {
+		const parts = rawModes
+			.split(",")
+			.map((part) => part.trim().toLowerCase())
+			.filter(Boolean);
+		if (!parts.every((part) => isJourneyMode(part))) {
+			return c.json(
+				{
+					error: {
+						code: "INVALID_MODES",
+						message:
+							"modes must be a comma-separated list of subway, rail, bus",
+					},
+				},
+				400
+			);
+		}
+
+		modes = new Set(parts);
+	}
+
 	const fromAgency = c.req.query("fromAgency");
 	if (fromAgency !== undefined && !isAgencyId(fromAgency)) {
 		return c.json(
@@ -114,7 +168,9 @@ journey.get("/", async (c) => {
 		);
 	}
 
-	return c.json({ data: await planJourney(from, to, { date, time }) });
+	return c.json({
+		data: await planJourney(from, to, { date, time, preference, modes }),
+	});
 });
 
 /** New York clock time right now, the timetable's own timezone. */

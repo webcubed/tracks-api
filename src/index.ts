@@ -7,6 +7,7 @@ import { AGENCY_IDS } from "./constants";
 import { experimental } from "./experimental";
 import { loadTable } from "./lib/loadTable";
 import { clearMemoized } from "./lib/memoize";
+import { getStations } from "./services/network";
 import { getRoutes } from "./services/routes";
 import { v1 } from "./v1";
 
@@ -35,37 +36,40 @@ app.route("experimental", experimental);
 const port = Number(process.env.PORT ?? 3000);
 const startupStartedAt = Date.now();
 
-// Static tables are small; warm them so the first request isn't the slow one.
-// getRoutes() pulls in the per-feed trips + shapes geometry as well.
+// Static tables are small; warm them sequentially so DuckDB never allocates
+// eight concurrent hash/window buffers at once on 512 MB hosts (e.g. Render free tier).
 async function warmStatic(phase: "startup" | "refresh"): Promise<void> {
 	const warmupStartedAt = Date.now();
 	const firstBootNote =
 		phase === "startup"
-			? " First boot commonly takes around 13 seconds while remote data is loaded."
+			? " First boot commonly takes ~10 seconds while remote data is loaded sequentially."
 			: "";
 
 	console.info(
 		`[${phase}] Warming agency and route data for ${AGENCY_IDS.length} feeds.${firstBootNote}`
 	);
 
-	await Promise.all(
-		AGENCY_IDS.map(async (id) => {
-			const feedStartedAt = Date.now();
-			console.info(`[${phase}] ${id}: loading agency and route data`);
+	for (const id of AGENCY_IDS) {
+		const feedStartedAt = Date.now();
+		console.info(`[${phase}] ${id}: loading agency and route data`);
 
-			try {
-				await Promise.all([loadTable(id, "agency"), getRoutes(id)]);
-			} catch (error) {
-				console.error(
-					`[${phase}] ${id}: warmup failed after ${elapsed(feedStartedAt)}`,
-					error
-				);
-				throw error;
-			}
+		try {
+			// eslint-disable-next-line no-await-in-loop
+			await Promise.all([
+				loadTable(id, "agency"),
+				getRoutes(id),
+				getStations(id),
+			]);
+		} catch (error) {
+			console.error(
+				`[${phase}] ${id}: warmup failed after ${elapsed(feedStartedAt)}`,
+				error
+			);
+			throw error;
+		}
 
-			console.info(`[${phase}] ${id}: ready in ${elapsed(feedStartedAt)}`);
-		})
-	);
+		console.info(`[${phase}] ${id}: ready in ${elapsed(feedStartedAt)}`);
+	}
 
 	console.info(`[${phase}] All feeds ready in ${elapsed(warmupStartedAt)}`);
 }

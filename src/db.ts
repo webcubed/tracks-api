@@ -13,12 +13,18 @@ export async function getDb(): Promise<DuckDBConnection> {
 	return connection;
 }
 
+const DUCKDB_MEMORY_LIMIT = process.env.DUCKDB_MEMORY_LIMIT ?? "96MB";
+const DUCKDB_THREADS = process.env.DUCKDB_THREADS ?? "1";
+
 async function open(): Promise<DuckDBConnection> {
 	const startedAt = Date.now();
 	console.info(
-		"[startup] Initializing in-memory DuckDB and loading httpfs/json extensions"
+		`[startup] Initializing in-memory DuckDB (memory_limit=${DUCKDB_MEMORY_LIMIT}, threads=${DUCKDB_THREADS}) and loading httpfs/json extensions`
 	);
-	const instance = await DuckDBInstance.create(":memory:");
+	const instance = await DuckDBInstance.create(":memory:", {
+		memory_limit: DUCKDB_MEMORY_LIMIT,
+		threads: DUCKDB_THREADS,
+	});
 	const db = await instance.connect();
 	await db.run("INSTALL httpfs");
 	await db.run("LOAD httpfs");
@@ -28,7 +34,7 @@ async function open(): Promise<DuckDBConnection> {
 	// metadata in DuckDB's per-connection object cache.
 	await db.run("PRAGMA enable_object_cache");
 	console.info(
-		`[startup] DuckDB ready in ${((Date.now() - startedAt) / 1000).toFixed(1)}s; warming up static data for all feeds now — please wait for the per-feed ready messages.`
+		`[startup] DuckDB ready in ${((Date.now() - startedAt) / 1000).toFixed(1)}s; warming up static data for feeds now.`
 	);
 	return db;
 }

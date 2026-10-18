@@ -3,38 +3,100 @@ import type {
 	ItineraryDraft,
 	Journey,
 	JourneyLeg,
+	JourneyPreference,
+	JourneyStep,
 	Label,
 	LegDesc,
 	Search,
+	StepDraft,
+	WalkDesc,
 } from "@/services/journey/types";
 import type { StopRef } from "@/services/network";
 import { clockOf, clockSeconds } from "@/lib/time";
 import { MAX_ITINERARIES } from "@/services/journey/types";
 import { directionIndexForShapes, getStopRefs } from "@/services/network";
 
-/** Destination labels become drafts, ranked by arrival. A label reached by
- * walking only matters when no ride reaches the destination: a trailing
- * transfer hop after the train already arrived is noise. */
-export function rankDestinations(search: Search): ItineraryDraft[] {
+function compareByPreference(
+	a: { draft: ItineraryDraft; arrival: number },
+	b: { draft: ItineraryDraft; arrival: number },
+	preference: JourneyPreference
+): number {
+	if (preference === "fewerTransfers") {
+		return (
+			a.draft.legs.length - b.draft.legs.length ||
+			a.arrival - b.arrival ||
+			a.draft.walkSeconds - b.draft.walkSeconds
+		);
+	}
+
+	if (preference === "lessWalking") {
+		return (
+			a.draft.walkSeconds - b.draft.walkSeconds ||
+			a.arrival - b.arrival ||
+			a.draft.legs.length - b.draft.legs.length
+		);
+	}
+
+	return (
+		a.arrival - b.arrival ||
+		a.draft.legs.length - b.draft.legs.length ||
+		a.draft.walkSeconds - b.draft.walkSeconds
+	);
+}
+
+function hasSameRouteTransfer(legs: readonly LegDesc[]): boolean {
+	for (let index = 1; index < legs.length; index++) {
+		const previous = legs[index - 1];
+		const current = legs[index];
+		if (
+			previous?.agency === current?.agency &&
+			previous?.route === current?.route
+		)
+			return true;
+	}
+
+	return false;
+}
+
+/**
+ * Destination labels become drafts, ranked by arrival or user preference
+ * (`fastest`, `fewerTransfers`, `lessWalking` — inspired by Vela's
+ * `TransitOrder.byPreference`). A label reached by walking only matters when
+ * no ride reaches the destination or when the final walk is meaningfully
+ * earlier than waiting for another train.
+ */
+export function rankDestinations(
+	search: Search,
+	preference: JourneyPreference = "fastest"
+): ItineraryDraft[] {
 	const dest = search.labels.get(search.destKey) ?? [];
 	const byArrival = dest.toSorted((a, b) => a.arrival - b.arrival);
-	const rideArrivals = byArrival.filter((label) => label.via.kind === "ride");
-	const ranked = rideArrivals.length > 0 ? rideArrivals : byArrival;
-	const candidates = ranked.flatMap((label) => {
-		const draft = itineraryFrom(search, label);
-		return draft && draft.legs.length > 0
-			? [{ draft, arrival: label.arrival }]
-			: [];
-	});
+	const earliestRideArrival =
+		byArrival.find((label) => label.via.kind === "ride")?.arrival ??
+		Number.POSITIVE_INFINITY;
+	// Keep ride arrivals plus any walk arrival that finishes before the earliest
+	// direct ride arrival.
+	const filtered = byArrival.filter(
+		(label) => label.via.kind === "ride" || label.arrival < earliestRideArrival
+	);
+	const ranked = filtered.length > 0 ? filtered : byArrival;
+
+	const candidates = ranked
+		.flatMap((label) => {
+			const draft = itineraryFrom(search, label);
+			return draft && draft.legs.length > 0 && !hasSameRouteTransfer(draft.legs)
+				? [{ draft, arrival: label.arrival }]
+				: [];
+		})
+		.toSorted((a, b) => compareByPreference(a, b, preference));
+
 	const drafts: ItineraryDraft[] = [];
 	const seenTrips = new Set<string>();
 	const seenPatterns = new Set<string>();
 
-	// First take the fastest journey for each distinct route pattern. Otherwise
-	// the first five may all be the same LIRR train to Penn, followed by the
-	// 1/2/3 from the same transfer, hiding a faster Q28→7 or Grand Central→S
-	// option just below them. Then fill remaining slots with the next scheduled
-	// departures, preserving the useful "next train" behaviour.
+	// First take the best journey for each distinct route pattern so one popular
+	// connection does not hide alternative corridors (e.g. LIRR vs subway or
+	// bus + subway). Then fill remaining slots with subsequent departures.
 	for (const { draft, arrival } of candidates) {
 		const pattern = draft.legs
 			.map((leg) => `${leg.agency}:${leg.route}`)
@@ -57,73 +119,141 @@ export function rankDestinations(search: Search): ItineraryDraft[] {
 		drafts.push(draft);
 	}
 
-	return drafts;
+	return drafts.toSorted((a, b) =>
+		compareByPreference(
+			{ draft: a, arrival: a.arrival },
+			{ draft: b, arrival: b.arrival },
+			preference
+		)
+	);
 }
 
 /**
- * Walk a destination label back to the start. Walking stays implicit: when
- * the chain leads with a walk, the journey departs at the query time (you can
- * leave now); from a direct ride it departs at the boarding time.
+ * Walk a destination label back to the start, collecting both the ride legs
+ * and the explicit walk/transfer steps between them. When the chain leads with
+ * a walk, time the initial walk immediately before the first ride's boarding
+ * time so the itinerary never includes arbitrary pre-trip waiting time.
  */
 function itineraryFrom(
-	search: Search,
+	_search: Search,
 	dest: Label
 ): ItineraryDraft | undefined {
-	const steps: Label[] = [];
+	const chain: Label[] = [];
 	let current: Label = dest;
 
 	while (current.via.kind !== "start") {
-		steps.push(current);
+		chain.push(current);
 		current = current.via.from;
 	}
 
-	if (steps.length === 0) return undefined;
+	if (chain.length === 0) return undefined;
 
-	const ordered = steps.toReversed();
+	const ordered = chain.toReversed();
 	const legs: LegDesc[] = [];
+	const steps: StepDraft[] = [];
 
 	for (const step of ordered) {
-		if (step.via.kind === "ride") legs.push(step.via.leg);
+		if (step.via.kind === "ride") {
+			legs.push(step.via.leg);
+			steps.push({ kind: "ride", leg: step.via.leg });
+		} else if (step.via.kind === "walk") {
+			steps.push({ kind: "walk", walk: { ...step.via.walk } });
+		}
 	}
 
 	if (legs.length === 0) return undefined;
 
-	// The origin label is still `current`: when the chain begins with one or
-	// more implicit walks, count those minutes from the requested departure,
-	// instead of backing out just the first walk and under-reporting a transfer
-	// path such as origin → bus stop → subway.
-	const departure =
-		ordered[0]?.via.kind === "walk"
-			? current.arrival
-			: clockSeconds(legs[0].boardTime);
+	const firstRideTime = clockSeconds(legs[0].boardTime);
+	let leadingWalkSeconds = 0;
+	for (const step of steps) {
+		if (step.kind === "walk") leadingWalkSeconds += step.walk.durationSeconds;
+		else break;
+	}
 
-	return { departure, arrival: dest.arrival, legs };
+	const departure =
+		leadingWalkSeconds > 0
+			? Math.max(current.arrival, firstRideTime - leadingWalkSeconds)
+			: firstRideTime;
+
+	// Align leading walk step timestamps with the actual departure time.
+	let cursor = departure;
+	for (const step of steps) {
+		if (step.kind === "walk") {
+			step.walk.fromTime = cursor;
+			cursor += step.walk.durationSeconds;
+			step.walk.toTime = cursor;
+		} else {
+			break;
+		}
+	}
+
+	const walkSeconds = steps.reduce(
+		(sum, step) => sum + (step.kind === "walk" ? step.walk.durationSeconds : 0),
+		0
+	);
+	const walkMeters = steps.reduce(
+		(sum, step) => sum + (step.kind === "walk" ? step.walk.distanceMeters : 0),
+		0
+	);
+
+	return {
+		departure,
+		arrival: dest.arrival,
+		walkSeconds,
+		walkMeters,
+		legs,
+		steps,
+	};
+}
+
+function collectDraftEntities(drafts: readonly ItineraryDraft[]): {
+	stopsByAgency: Map<AgencyId, Set<string>>;
+	shapesByAgency: Map<AgencyId, Set<string>>;
+} {
+	const stopsByAgency = new Map<AgencyId, Set<string>>();
+	const shapesByAgency = new Map<AgencyId, Set<string>>();
+
+	const addStop = (agency: AgencyId, stopId: string) => {
+		let stops = stopsByAgency.get(agency);
+		if (!stops) {
+			stops = new Set();
+			stopsByAgency.set(agency, stops);
+		}
+
+		stops.add(stopId);
+	};
+
+	const addShape = (agency: AgencyId, shapeId: string | undefined) => {
+		if (!shapeId) return;
+		let shapes = shapesByAgency.get(agency);
+		if (!shapes) {
+			shapes = new Set();
+			shapesByAgency.set(agency, shapes);
+		}
+
+		shapes.add(shapeId);
+	};
+
+	for (const draft of drafts) {
+		for (const step of draft.steps) {
+			if (step.kind === "ride") {
+				addStop(step.leg.agency, step.leg.boardStop);
+				addStop(step.leg.agency, step.leg.alightStop);
+				addShape(step.leg.agency, step.leg.shapeId);
+			} else {
+				addStop(step.walk.fromFeed, step.walk.fromStation);
+				addStop(step.walk.toFeed, step.walk.toStation);
+			}
+		}
+	}
+
+	return { stopsByAgency, shapesByAgency };
 }
 
 export async function renderItineraries(
 	drafts: ItineraryDraft[]
 ): Promise<Journey[]> {
-	const legs = drafts.flatMap((draft) => draft.legs);
-	const stopsByAgency = new Map<AgencyId, Set<string>>();
-	const shapesByAgency = new Map<AgencyId, Set<string>>();
-	for (const leg of legs) {
-		let stops = stopsByAgency.get(leg.agency);
-		if (!stops) {
-			stops = new Set();
-			stopsByAgency.set(leg.agency, stops);
-		}
-		stops.add(leg.boardStop);
-		stops.add(leg.alightStop);
-
-		if (leg.shapeId) {
-			let shapes = shapesByAgency.get(leg.agency);
-			if (!shapes) {
-				shapes = new Set();
-				shapesByAgency.set(leg.agency, shapes);
-			}
-			shapes.add(leg.shapeId);
-		}
-	}
+	const { stopsByAgency, shapesByAgency } = collectDraftEntities(drafts);
 
 	const [refsEntries, directionEntries] = await Promise.all([
 		Promise.all(
@@ -135,7 +265,10 @@ export async function renderItineraries(
 		Promise.all(
 			[...shapesByAgency].map(
 				async ([agency, shapeIds]) =>
-					[agency, await directionIndexForShapes(agency, [...shapeIds])] as const
+					[
+						agency,
+						await directionIndexForShapes(agency, [...shapeIds]),
+					] as const
 			)
 		),
 	]);
@@ -143,14 +276,70 @@ export async function renderItineraries(
 	const refsByAgency = new Map(refsEntries);
 	const directionsByAgency = new Map(directionEntries);
 
-	return drafts.map((draft) => ({
-		departureTime: clockOf(draft.departure),
-		arrivalTime: clockOf(draft.arrival),
-		durationMinutes: Math.round((draft.arrival - draft.departure) / 60),
-		legs: draft.legs.map((leg) =>
+	return drafts.map((draft) => {
+		const legs = draft.legs.map((leg) =>
 			renderLeg(leg, refsByAgency, directionsByAgency)
-		),
-	}));
+		);
+		const steps: JourneyStep[] = draft.steps.map((step) => {
+			if (step.kind === "ride") {
+				const rendered = renderLeg(step.leg, refsByAgency, directionsByAgency);
+				const durationSeconds = Math.max(
+					0,
+					clockSeconds(step.leg.alightTime) - clockSeconds(step.leg.boardTime)
+				);
+				return {
+					kind: "ride",
+					durationSeconds,
+					...rendered,
+				};
+			}
+
+			return renderWalkStep(step.walk, refsByAgency);
+		});
+
+		return {
+			departureTime: clockOf(draft.departure),
+			arrivalTime: clockOf(draft.arrival),
+			durationMinutes: Math.max(
+				1,
+				Math.round((draft.arrival - draft.departure) / 60)
+			),
+			walkingDurationSeconds: draft.walkSeconds,
+			walkingDistanceMeters: draft.walkMeters,
+			transfers: Math.max(0, legs.length - 1),
+			legs,
+			steps,
+		};
+	});
+}
+
+function renderWalkStep(
+	walk: WalkDesc,
+	refsByAgency: Map<AgencyId, Map<string, StopRef | undefined>>
+): JourneyStep {
+	const fromRef = refsByAgency.get(walk.fromFeed)?.get(walk.fromStation);
+	const toRef = refsByAgency.get(walk.toFeed)?.get(walk.toStation);
+
+	return {
+		kind: "walk",
+		distanceMeters: walk.distanceMeters,
+		durationSeconds: walk.durationSeconds,
+		transferType: walk.transferType,
+		from: {
+			id: fromRef?.id ?? walk.fromStation,
+			name: fromRef?.name ?? walk.fromStation,
+			agency: walk.fromFeed,
+			time: clockOf(walk.fromTime),
+			location: fromRef?.location ?? { lat: walk.fromLat, lon: walk.fromLon },
+		},
+		to: {
+			id: toRef?.id ?? walk.toStation,
+			name: toRef?.name ?? walk.toStation,
+			agency: walk.toFeed,
+			time: clockOf(walk.toTime),
+			location: toRef?.location ?? { lat: walk.toLat, lon: walk.toLon },
+		},
+	};
 }
 
 function renderLeg(
@@ -168,6 +357,7 @@ function renderLeg(
 		headsign: leg.headsign,
 		direction: directionsByAgency.get(leg.agency)?.get(leg.shapeId ?? "") ?? "",
 		tripId: leg.tripId,
+		stops: leg.stops,
 		from: {
 			id: fromRef?.id ?? leg.boardStop,
 			name: fromRef?.name ?? "",

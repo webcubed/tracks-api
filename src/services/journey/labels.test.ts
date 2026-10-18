@@ -1,6 +1,7 @@
 import type { Label, Search } from "@/services/journey/types";
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { AGENCY_IDS } from "@/constants";
 import { admit } from "@/services/journey/labels";
 
 function searchAt(station: string): Search {
@@ -11,6 +12,8 @@ function searchAt(station: string): Search {
 		stationsById: new Map(),
 		transfers: new Map(),
 		destKey: `subway:${station}-destination`,
+		destLocation: { lat: 40.75, lon: -73.99 },
+		allowedFeeds: new Set(AGENCY_IDS),
 	};
 }
 
@@ -27,6 +30,8 @@ function label(
 		lon: -73.99,
 		arrival,
 		rides,
+		walkSeconds: 0,
+		walkMeters: 0,
 		pattern,
 		round: rides,
 		via: { kind: "start" },

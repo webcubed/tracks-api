@@ -1,6 +1,6 @@
 import type { AgencyId } from "@/constants";
 import { resolveStop } from "@/services/network";
-import { getCountdown, isStationCode } from "@/services/radar";
+import { getCountdown, getLocations, isStationCode } from "@/services/radar";
 import { stationNameFor, stationNames } from "@/services/stationCodes";
 import { getVehicles } from "@/services/vehicles";
 
@@ -31,7 +31,7 @@ export type TrainRoute = {
 	direction?: string;
 	/** The station the tracking system was asked about — the train's next stop. */
 	station?: { code: string; name: string };
-	source?: "mta-radar-countdown";
+	source?: "mta-radar-countdown" | "mta-radar-locations";
 	events: TrainRouteEvent[];
 	/** Set when a route could not be resolved; `events` is empty. */
 	error?: string;
@@ -49,6 +49,18 @@ type RadarEvent = {
 	oper_time?: number;
 };
 
+type RadarStop = {
+	code?: string;
+	stop_type?: string;
+	stop_status?: string;
+	sign_track?: string;
+	t2s_track?: string;
+	sched_time?: number;
+	act_arrive_time?: number;
+	act_depart_time?: number;
+	act_time?: number;
+};
+
 type RadarTrain = {
 	train_num?: string;
 	details?: {
@@ -56,6 +68,7 @@ type RadarTrain = {
 		headsign?: string;
 		direction?: string;
 		events?: RadarEvent[];
+		stops?: RadarStop[];
 	};
 };
 
@@ -84,11 +97,164 @@ function timeOf(event: RadarEvent): number | undefined {
 	);
 }
 
+function stopTimeOf(stop: RadarStop): number | undefined {
+	return (
+		stop.act_arrive_time ??
+		stop.act_depart_time ??
+		stop.act_time ??
+		stop.sched_time
+	);
+}
+
+function formatEvents(
+	events: RadarEvent[],
+	names: Map<string, string>
+): TrainRouteEvent[] {
+	return events.flatMap((event) => {
+		const eventCode = (event.code ?? "").trim().toUpperCase();
+		if (!eventCode) return [];
+		const track = (event.act_track ?? event.sched_track)?.trim();
+		const time = timeOf(event);
+
+		return [
+			{
+				code: eventCode,
+				name: stationNameFor(names, eventCode),
+				stopType: event.stop_type ?? "",
+				...(track ? { track } : {}),
+				...(time === undefined ? {} : { time }),
+				passed:
+					event.act_arrive !== undefined ||
+					event.act_depart !== undefined ||
+					event.act_time !== undefined,
+			},
+		];
+	});
+}
+
+function formatStops(
+	stops: RadarStop[],
+	names: Map<string, string>
+): TrainRouteEvent[] {
+	return stops.flatMap((stop) => {
+		const stopCode = (stop.code ?? "").trim().toUpperCase();
+		if (!stopCode) return [];
+		const track = (stop.sign_track ?? stop.t2s_track)?.trim();
+		const time = stopTimeOf(stop);
+
+		return [
+			{
+				code: stopCode,
+				name: stationNameFor(names, stopCode),
+				stopType: stop.stop_type ?? "STOP",
+				...(track ? { track } : {}),
+				...(time === undefined ? {} : { time }),
+				passed:
+					stop.stop_status === "DEPARTED" ||
+					stop.act_depart_time !== undefined ||
+					stop.act_arrive_time !== undefined ||
+					stop.act_time !== undefined,
+			},
+		];
+	});
+}
+
+async function queryStationCountdown(
+	code: string,
+	tokens: Set<string>,
+	names: Map<string, string>,
+	trainRoute: TrainRoute
+): Promise<TrainRoute | undefined> {
+	const station = { code, name: stationNameFor(names, code) };
+	let raw: unknown;
+	try {
+		raw = await getCountdown(code, { includePassed: true, hours: 4 });
+	} catch {
+		return undefined;
+	}
+
+	const trains = (Array.isArray(raw) ? raw : []).filter(
+		(train): train is RadarTrain => typeof train === "object" && train !== null
+	);
+	const match = trains.find(
+		(train) => train.train_num && tokens.has(train.train_num)
+	);
+	const events = match?.details?.events ?? [];
+	if (!match || events.length === 0) return undefined;
+
+	return {
+		...trainRoute,
+		train: match.train_num,
+		branch: match.details?.branch,
+		headsign: match.details?.headsign,
+		direction: match.details?.direction,
+		station,
+		source: "mta-radar-countdown",
+		events: formatEvents(events, names),
+	};
+}
+
+async function queryLocationsFallback(
+	nextCode: string,
+	tokens: Set<string>,
+	names: Map<string, string>,
+	trainRoute: TrainRoute
+): Promise<TrainRoute | undefined> {
+	let rawLocations: unknown;
+	try {
+		rawLocations = await getLocations("LIRR", "TRACK_TURF");
+	} catch {
+		return undefined;
+	}
+
+	const locationTrains = (
+		Array.isArray(rawLocations) ? rawLocations : []
+	).filter(
+		(train): train is RadarTrain => typeof train === "object" && train !== null
+	);
+	const match = locationTrains.find(
+		(train) => train.train_num && tokens.has(train.train_num)
+	);
+	const stops = match?.details?.stops ?? [];
+	if (!match || stops.length === 0) return undefined;
+
+	const nextRadarStop =
+		stops.find((stop) => stop.stop_status !== "DEPARTED") ?? stops.at(-1);
+	const candidateCode = (nextRadarStop?.code ?? "").trim().toUpperCase();
+
+	if (isStationCode(candidateCode) && candidateCode !== nextCode) {
+		const fromCountdown = await queryStationCountdown(
+			candidateCode,
+			tokens,
+			names,
+			trainRoute
+		);
+		if (fromCountdown) return fromCountdown;
+	}
+
+	const station = isStationCode(candidateCode)
+		? { code: candidateCode, name: stationNameFor(names, candidateCode) }
+		: undefined;
+
+	return {
+		...trainRoute,
+		train: match.train_num,
+		branch: match.details?.branch,
+		headsign: match.details?.headsign,
+		direction: match.details?.direction,
+		...(station ? { station } : {}),
+		source: "mta-radar-locations",
+		events: formatStops(stops, names),
+	};
+}
+
 /**
  * The operational route of a live train, from the tracking system's own event
  * list: every station it calls at plus the interlockings and yards it runs
- * through, each with the track it uses. The list is keyed by the train's next
- * stop, which is the station the tracking system can be asked about.
+ * through, each with the track it uses. Keyed by the train's next stop when
+ * GTFS-RT reports one; when GTFS-RT omits `nextStopId` (common on LIRR),
+ * falls back to matching the train in Radar `/locations` to find its active
+ * station and stops.
  */
 export async function getTrainRoute(
 	id: string,
@@ -105,14 +271,33 @@ export async function getTrainRoute(
 		vehicle: { id: vehicle.id, route: vehicle.route },
 		events: [],
 	};
+	const tokens = new Set(idTokens(vehicle.id));
+	const names = await stationNames("lirr");
 
-	// Only the LIRR feed publishes station codes, which is what the tracking
-	// system is addressed by.
 	const nextStop = vehicle.nextStopId
 		? await resolveStop(vehicle.nextStopId, "lirr")
 		: undefined;
-	const code = (nextStop?.row.stop_code ?? "").trim().toUpperCase();
-	if (!isStationCode(code)) {
+	const nextCode = (nextStop?.row.stop_code ?? "").trim().toUpperCase();
+
+	if (isStationCode(nextCode)) {
+		const fromCountdown = await queryStationCountdown(
+			nextCode,
+			tokens,
+			names,
+			trainRoute
+		);
+		if (fromCountdown) return fromCountdown;
+	}
+
+	const fromLocations = await queryLocationsFallback(
+		nextCode,
+		tokens,
+		names,
+		trainRoute
+	);
+	if (fromLocations) return fromLocations;
+
+	if (!isStationCode(nextCode)) {
 		return {
 			...trainRoute,
 			error:
@@ -120,68 +305,10 @@ export async function getTrainRoute(
 		};
 	}
 
-	const names = await stationNames("lirr");
-	const station = { code, name: stationNameFor(names, code) };
-
-	// A four-hour window covers the longest run; `include_passed` keeps a train
-	// that has just left the station from dropping out of its own route.
-	let raw: unknown;
-	try {
-		raw = await getCountdown(code, { includePassed: true, hours: 4 });
-	} catch (error) {
-		return {
-			...trainRoute,
-			station,
-			error:
-				error instanceof Error ? error.message : "Tracking system unavailable",
-		};
-	}
-
-	const trains = (Array.isArray(raw) ? raw : []).filter(
-		(train): train is RadarTrain => typeof train === "object" && train !== null
-	);
-	// The live feed's vehicle id carries the run number as one of its own
-	// tokens (`GO202_26_2953_METS_V`), which is what ties a position to a run.
-	const tokens = new Set(idTokens(vehicle.id));
-	const match = trains.find(
-		(train) => train.train_num && tokens.has(train.train_num)
-	);
-	const events = match?.details?.events ?? [];
-	if (!match || events.length === 0) {
-		return {
-			...trainRoute,
-			station,
-			error: `No run for this train is posted at ${station.name} yet.`,
-		};
-	}
-
+	const station = { code: nextCode, name: stationNameFor(names, nextCode) };
 	return {
 		...trainRoute,
-		train: match.train_num,
-		branch: match.details?.branch,
-		headsign: match.details?.headsign,
-		direction: match.details?.direction,
 		station,
-		source: "mta-radar-countdown",
-		events: events.flatMap((event) => {
-			const eventCode = (event.code ?? "").trim().toUpperCase();
-			if (!eventCode) return [];
-			const track = (event.act_track ?? event.sched_track)?.trim();
-			const time = timeOf(event);
-
-			return [
-				{
-					code: eventCode,
-					name: stationNameFor(names, eventCode),
-					stopType: event.stop_type ?? "",
-					...(track ? { track } : {}),
-					...(time === undefined ? {} : { time }),
-					passed:
-						event.act_arrive !== undefined ||
-						event.act_depart !== undefined ||
-						event.act_time !== undefined,
-				},
-			];
-		}),
+		error: `No run for this train is posted at ${station.name} yet.`,
 	};
 }

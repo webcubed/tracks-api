@@ -18,7 +18,8 @@ export function clearMemoized(): void {
  */
 export function memoize<Args extends unknown[], V>(
 	load: (...args: Args) => Promise<V>,
-	ttlMs = Number.POSITIVE_INFINITY
+	ttlMs = Number.POSITIVE_INFINITY,
+	maxEntries = 100
 ): (...args: Args) => Promise<V> {
 	const cache = new Map<string, Entry<V>>();
 	clearHooks.push(() => {
@@ -26,11 +27,23 @@ export function memoize<Args extends unknown[], V>(
 	});
 
 	return async (...args: Args) => {
+		const now = Date.now();
 		const key = JSON.stringify(args);
 		const hit = cache.get(key);
-		if (hit && Date.now() - hit.at < ttlMs) return hit.promise;
+		if (hit && now - hit.at < ttlMs) return hit.promise;
 
-		const entry: Entry<V> = { promise: load(...args), at: Date.now() };
+		if (Number.isFinite(ttlMs) && cache.size >= maxEntries) {
+			for (const [k, existing] of cache) {
+				if (now - existing.at >= ttlMs) cache.delete(k);
+			}
+
+			if (cache.size >= maxEntries) {
+				const oldestKey = cache.keys().next().value;
+				if (oldestKey !== undefined) cache.delete(oldestKey);
+			}
+		}
+
+		const entry: Entry<V> = { promise: load(...args), at: now };
 		cache.set(key, entry);
 		entry.promise.catch(() => {
 			// A stale entry rejecting after replacement must not evict the new one.

@@ -11,9 +11,87 @@ import { memoize } from "@/lib/memoize";
 import { runQuery } from "@/lib/parquet";
 import { clockOf, clockSeconds } from "@/lib/time";
 import { admit, cellKey, drainWalks } from "@/services/journey/labels";
-import { TRANSFER_S, WINDOW_S } from "@/services/journey/types";
+import {
+	MAX_ITINERARIES,
+	TRANSFER_S,
+	WINDOW_S,
+} from "@/services/journey/types";
 import { getStations, getStopRefs, stopIdsOf } from "@/services/network";
 import { activeServices } from "@/services/schedule";
+
+/**
+ * Cap the number of stations queried per bus feed in a single round so a
+ * dense frontier never generates a 1,000-placeholder DuckDB query over a
+ * 20 MB remote Parquet file.
+ */
+const MAX_BUS_FRONTIER_STATIONS = 32;
+
+/**
+ * Once we have at least `MAX_ITINERARIES` destination arrivals, prune frontier
+ * labels that are already past `earliestDestinationArrival + SLACK_S` so late
+ * rounds don't keep scanning unreachable branches.
+ */
+const DESTINATION_PRUNE_SLACK_S = 2400;
+
+function hasEnoughDestinationArrivals(search: Search): boolean {
+	const destLabels = search.labels.get(search.destKey);
+	if (!destLabels || destLabels.length < MAX_ITINERARIES) return false;
+	const patterns = new Set(destLabels.map((label) => label.pattern));
+	return patterns.size >= 3 || destLabels.length >= 12;
+}
+
+function destinationCutoff(search: Search): number {
+	const destLabels = search.labels.get(search.destKey);
+	if (!destLabels || destLabels.length === 0) return Number.POSITIVE_INFINITY;
+
+	const sorted = destLabels
+		.map((label) => label.arrival)
+		.toSorted((a, b) => a - b);
+	const earliest = sorted[0] ?? Number.POSITIVE_INFINITY;
+	if (sorted.length >= MAX_ITINERARIES) {
+		const fifth = sorted[MAX_ITINERARIES - 1] ?? earliest;
+		return Math.min(fifth + 1200, earliest + DESTINATION_PRUNE_SLACK_S);
+	}
+
+	return earliest + DESTINATION_PRUNE_SLACK_S;
+}
+
+function collectRoundFrontier(
+	search: Search,
+	round: number,
+	cutoff: number
+): Map<AgencyId, Label[]> {
+	const skipBusFeeds =
+		(round === 4 || (round >= 3 && hasEnoughDestinationArrivals(search))) &&
+		!search.destKey.startsWith("bus_");
+	const frontierByFeed = new Map<AgencyId, Label[]>();
+
+	for (const labels of search.labels.values()) {
+		for (const label of labels) {
+			if (label.rides !== round - 1 || label.arrival > cutoff) continue;
+			if (skipBusFeeds && label.feed.startsWith("bus_")) continue;
+
+			const frontier = frontierByFeed.get(label.feed);
+			if (frontier) frontier.push(label);
+			else frontierByFeed.set(label.feed, [label]);
+		}
+	}
+
+	return frontierByFeed;
+}
+
+function shouldSkipFeedScan(
+	search: Search,
+	round: number,
+	feed: AgencyId
+): boolean {
+	return (
+		round >= 2 &&
+		feed.startsWith("bus_") &&
+		hasEnoughDestinationArrivals(search) &&
+		!search.destKey.startsWith("bus_")
+	);
+}
 
 /**
  * Board every ride feed from each frontier label (those carrying exactly
@@ -26,27 +104,35 @@ export async function boardRound(
 	feeds: readonly AgencyId[],
 	date: string
 ): Promise<number> {
-	const frontierByFeed = new Map<AgencyId, Label[]>();
-	for (const labels of search.labels.values()) {
-		for (const label of labels) {
-			if (label.rides !== round - 1) continue;
-			const frontier = frontierByFeed.get(label.feed);
-			if (frontier) frontier.push(label);
-			else frontierByFeed.set(label.feed, [label]);
-		}
-	}
+	if (round >= 4 && hasEnoughDestinationArrivals(search)) return 0;
 
+	const frontierByFeed = collectRoundFrontier(
+		search,
+		round,
+		destinationCutoff(search)
+	);
 	if (frontierByFeed.size === 0) return 0;
 
+	// Scan rail feeds first so fast rail arrivals establish a tight cutoff before
+	// scanning any bus feeds in the same round.
+	const orderedFeeds = [
+		...feeds.filter((feed) => !feed.startsWith("bus_")),
+		...feeds.filter((feed) => feed.startsWith("bus_")),
+	];
+
 	let added = 0;
-	// One feed at a time. They share the process's single DuckDB connection, so
-	// overlapping the scans only queues them behind one another — measured
-	// three times slower end to end than reading them in turn.
-	for (const feed of feeds) {
+	for (const feed of orderedFeeds) {
 		const frontier = frontierByFeed.get(feed);
-		if (!frontier) continue;
+		if (!frontier || shouldSkipFeedScan(search, round, feed)) continue;
+
+		const currentCutoff = destinationCutoff(search);
+		const activeFrontier = frontier.filter(
+			(label) => label.arrival <= currentCutoff
+		);
+		if (activeFrontier.length === 0) continue;
+
 		// eslint-disable-next-line no-await-in-loop
-		const scan = await planFeed(feed, frontier, date);
+		const scan = await planFeed(feed, activeFrontier, date);
 		if (!scan) continue;
 
 		for (const rows of scan.trips.values()) {
@@ -81,9 +167,27 @@ async function planFeed(
 		else byStation.set(label.station, [label]);
 	}
 
+	let stationKeys = [...byStation.keys()];
+	if (
+		feed.startsWith("bus_") &&
+		stationKeys.length > MAX_BUS_FRONTIER_STATIONS
+	) {
+		stationKeys = stationKeys
+			.toSorted((a, b) => {
+				const minA = Math.min(
+					...(byStation.get(a)?.map((l) => l.arrival) ?? [Infinity])
+				);
+				const minB = Math.min(
+					...(byStation.get(b)?.map((l) => l.arrival) ?? [Infinity])
+				);
+				return minA - minB;
+			})
+			.slice(0, MAX_BUS_FRONTIER_STATIONS);
+	}
+
 	const earliest = Math.min(...frontierInFeed.map((label) => label.arrival));
 	const stationLists = await Promise.all(
-		[...byStation.keys()].map(async (id) => stopIdsOf(feed, id))
+		stationKeys.map(async (id) => stopIdsOf(feed, id))
 	);
 	const ids = [...new Set(stationLists.flat())].toSorted();
 	if (ids.length === 0) return undefined;
@@ -91,9 +195,10 @@ async function planFeed(
 	// Timetable rows are minute-granularity. Expand each search window to
 	// five-minute boundaries so nearby requests reuse the same remote scan;
 	// rideTrip still checks every departure against the exact label time.
+	const windowSpan = feed.startsWith("bus_") ? 3600 : WINDOW_S;
 	const window = {
 		min: Math.max(0, Math.floor((earliest - TRANSFER_S) / 300) * 300),
-		max: Math.ceil((earliest + WINDOW_S) / 300) * 300,
+		max: Math.ceil((earliest + windowSpan) / 300) * 300,
 	};
 	const trips = await timelines(feed, ids, activeServices(feed, date), window);
 	const stationOf = await stationIndexByStop(feed, trips);
@@ -141,6 +246,13 @@ function rideTrip(search: Search, scan: RideScan): number {
 	let added = 0;
 	for (const [boardLabel, boardIndex] of boarding) {
 		const boardRow = rows[boardIndex];
+		const routeLeg = `${feed}:${boardRow.route_id}`;
+		if (
+			boardLabel.pattern === routeLeg ||
+			boardLabel.pattern.endsWith(`|${routeLeg}`)
+		)
+			continue;
+
 		for (let index = boardIndex + 1; index < rows.length; index++) {
 			const row = rows[index];
 			if (row.arrival_time === "") continue;
@@ -155,6 +267,8 @@ function rideTrip(search: Search, scan: RideScan): number {
 				lon: ref.location.lon,
 				arrival: clockSeconds(row.arrival_time),
 				rides: round,
+				walkSeconds: boardLabel.walkSeconds,
+				walkMeters: boardLabel.walkMeters,
 				pattern: appendRoute(boardLabel.pattern, feed, row.route_id),
 				round,
 				via: {
@@ -169,6 +283,7 @@ function rideTrip(search: Search, scan: RideScan): number {
 						boardTime: boardRow.departure_time,
 						alightStop: row.stop_id,
 						alightTime: row.arrival_time,
+						stops: index - boardIndex,
 					},
 					from: boardLabel,
 				},
@@ -193,6 +308,59 @@ function transferBuffer(label: Label): number {
 }
 
 /**
+ * Feeds where the pre-built `_journey_boarding` and `_journey_timeline` parquet
+ * assets returned 404 from the release, so subsequent scans go straight to the
+ * single-pass `stop_times` + `trips` query without retrying the 404 URL.
+ */
+const missingJourneyIndexFeeds = new Set<AgencyId>();
+
+async function queryTimelinesFallback(
+	agency: AgencyId,
+	stopIds: readonly string[],
+	service: { sql: string; parameters: string[] },
+	window: { min: number; max: number }
+): Promise<TimelineRow[]> {
+	const stopTimesUrl = getStaticFeedUrl(agency, "stop_times");
+	const tripsUrl = getStaticFeedUrl(agency, "trips");
+
+	return runQuery<TimelineRow>(
+		`WITH active_trips AS (
+			SELECT trip_id, route_id, trip_headsign, shape_id
+			FROM read_parquet('${tripsUrl}')
+			WHERE service_id IN (${service.sql})
+		),
+		active_stop_times AS (
+			SELECT st.trip_id, st.stop_id, st.arrival_time, st.departure_time, st.stop_sequence,
+				a.route_id, a.trip_headsign, a.shape_id,
+				max(
+					CASE
+						WHEN st.stop_id IN (${stopIds.map(() => "?").join(", ")})
+							AND st.departure_time >= ? AND st.departure_time <= ?
+						THEN 1
+						ELSE 0
+					END
+				) OVER (PARTITION BY st.trip_id) AS is_boardable
+			FROM read_parquet('${stopTimesUrl}') st
+			JOIN active_trips a ON a.trip_id = st.trip_id
+		)
+		SELECT trip_id, stop_id, arrival_time, departure_time,
+			route_id, trip_headsign, shape_id
+		FROM active_stop_times
+		WHERE is_boardable = 1
+		ORDER BY trip_id, CAST(stop_sequence AS INTEGER)`,
+		...service.parameters,
+		...stopIds,
+		clockOf(window.min),
+		clockOf(window.max)
+	);
+}
+
+function stripTrailingSlash(url: string | undefined): string | undefined {
+	if (!url) return undefined;
+	return url.endsWith("/") ? url.slice(0, -1) : url;
+}
+
+/**
  * Full stop-by-stop timelines of active trips boardable from `stopIds` inside
  * the departure window; nearby identical scans share this five-minute cache.
  */
@@ -203,33 +371,43 @@ const timelines = memoize(
 		service: { sql: string; parameters: string[] },
 		window: { min: number; max: number }
 	): Promise<Map<string, TimelineRow[]>> => {
-		const indexBase = process.env.JOURNEY_INDEX_URL_BASE?.replace(/\/$/, "");
-		const boardingUrl = indexBase
-			? `${indexBase}/${agency}_journey_boarding.parquet`
-			: getJourneyIndexUrl(agency, "boarding");
-		const timelineUrl = indexBase
-			? `${indexBase}/${agency}_journey_timeline.parquet`
-			: getJourneyIndexUrl(agency, "timeline");
-		const stopTimesUrl = getStaticFeedUrl(agency, "stop_times");
-		const tripsUrl = getStaticFeedUrl(agency, "trips");
-		const rows = await runQuery<TimelineRow>(
-			`WITH boardable_trips AS (
-				SELECT DISTINCT b.trip_id
-				FROM read_parquet('${boardingUrl}') b
-				WHERE b.stop_id IN (${stopIds.map(() => "?").join(", ")})
-				  AND b.departure_time >= ? AND b.departure_time <= ?
-				  AND b.service_id IN (${service.sql})
-			)
-			SELECT t.trip_id, t.stop_id, t.arrival_time, t.departure_time,
-				t.route_id, t.trip_headsign, t.shape_id
-			FROM read_parquet('${timelineUrl}') t
-			JOIN boardable_trips b ON b.trip_id = t.trip_id
-			ORDER BY t.trip_id, CAST(t.stop_sequence AS INTEGER)`,
-			...stopIds,
-			clockOf(window.min),
-			clockOf(window.max),
-			...service.parameters
-		);
+		const indexBase = stripTrailingSlash(process.env.JOURNEY_INDEX_URL_BASE);
+		let rows: TimelineRow[];
+
+		if (!missingJourneyIndexFeeds.has(agency) || indexBase) {
+			const boardingUrl = indexBase
+				? `${indexBase}/${agency}_journey_boarding.parquet`
+				: getJourneyIndexUrl(agency, "boarding");
+			const timelineUrl = indexBase
+				? `${indexBase}/${agency}_journey_timeline.parquet`
+				: getJourneyIndexUrl(agency, "timeline");
+
+			try {
+				rows = await runQuery<TimelineRow>(
+					`WITH boardable_trips AS (
+						SELECT DISTINCT b.trip_id
+						FROM read_parquet('${boardingUrl}') b
+						WHERE b.stop_id IN (${stopIds.map(() => "?").join(", ")})
+						  AND b.departure_time >= ? AND b.departure_time <= ?
+						  AND b.service_id IN (${service.sql})
+					)
+					SELECT t.trip_id, t.stop_id, t.arrival_time, t.departure_time,
+						t.route_id, t.trip_headsign, t.shape_id
+					FROM read_parquet('${timelineUrl}') t
+					JOIN boardable_trips b ON b.trip_id = t.trip_id
+					ORDER BY t.trip_id, CAST(t.stop_sequence AS INTEGER)`,
+					...stopIds,
+					clockOf(window.min),
+					clockOf(window.max),
+					...service.parameters
+				);
+			} catch {
+				if (!indexBase) missingJourneyIndexFeeds.add(agency);
+				rows = await queryTimelinesFallback(agency, stopIds, service, window);
+			}
+		} else {
+			rows = await queryTimelinesFallback(agency, stopIds, service, window);
+		}
 
 		const trips = new Map<string, TimelineRow[]>();
 		for (const row of rows) {
@@ -244,7 +422,8 @@ const timelines = memoize(
 
 		return trips;
 	},
-	5 * 60_000
+	5 * 60_000,
+	24
 );
 
 /** Platform rows to the station they belong to, resolved in one batch. */

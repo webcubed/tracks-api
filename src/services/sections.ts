@@ -274,6 +274,48 @@ const STATIC_SECTIONS_URL =
 	"https://github.com/webcubed/tracks-api/releases/download/latest-rail-sections/rail-sections.json";
 
 /**
+ * Curated fallback of major LIRR yards, junctions, and interlockings along the
+ * railroad's alignments (with OpenStreetMap coordinates and distances), served
+ * when the monthly GitHub release snapshot has not been published yet.
+ */
+const FALLBACK_SECTIONS_RAW: Array<[string, string, number, number, number]> = [
+	["Harold Interlocking", "junction", 40.7469, -73.9303, 12],
+	["Sunnyside Yard", "yard", 40.7484, -73.9261, 45],
+	["West Side Yard", "yard", 40.7547, -74.0038, 20],
+	["Jay Interlocking", "junction", 40.6997, -73.8124, 8],
+	["Hall Interlocking", "junction", 40.6989, -73.8038, 10],
+	["Dunton Interlocking", "junction", 40.6939, -73.8295, 15],
+	["Hillside Facility", "yard", 40.7068, -73.7755, 32],
+	["Morris Park Yard", "yard", 40.6968, -73.8235, 28],
+	["Queens Interlocking", "junction", 40.7174, -73.7363, 11],
+	["Floral Park Junction", "junction", 40.7246, -73.7064, 14],
+	["Nassau Interlocking", "junction", 40.7403, -73.6406, 9],
+	["Divide Interlocking", "junction", 40.7671, -73.5262, 10],
+	["Valley Interlocking", "junction", 40.6615, -73.7047, 12],
+	["Lead Interlocking", "junction", 40.6194, -73.6632, 18],
+	["Long Beach Yard", "yard", 40.5893, -73.6648, 25],
+	["Babylon Yard", "yard", 40.7005, -73.3242, 41],
+	["Wantagh Yard", "yard", 40.673, -73.51, 15],
+	["Ronkonkoma Yard", "yard", 40.808, -73.1059, 35],
+	["Port Jefferson Yard", "yard", 40.9347, -73.0532, 22],
+	["Port Washington Yard", "yard", 40.8293, -73.6874, 19],
+	["Oyster Bay Yard", "yard", 40.8749, -73.5316, 24],
+	["Speonk Yard", "yard", 40.8213, -72.7048, 30],
+	["Montauk Yard", "yard", 41.0467, -71.9544, 27],
+	["Richmond Hill Yard", "yard", 40.6976, -73.8351, 38],
+	["Arch Street Shop", "depot", 40.7445, -73.9478, 52],
+];
+
+const FALLBACK_SECTIONS: RailSection[] = FALLBACK_SECTIONS_RAW.map(
+	([name, kind, lat, lon, distance]) => ({
+		name,
+		kind,
+		location: { lat, lon },
+		distance,
+	})
+);
+
+/**
  * One cached read per API process. No Overpass request is made on a map load;
  * the monthly job owns fetching and publishing the data.
  */
@@ -315,6 +357,10 @@ async function loadRailSectionsSnapshot(): Promise<RailSection[]> {
 	const response = await fetch(STATIC_SECTIONS_URL, {
 		signal: AbortSignal.timeout(10_000),
 	});
+	if (response.status === 404 && !process.env.RAIL_SECTIONS_URL) {
+		return FALLBACK_SECTIONS;
+	}
+
 	if (!response.ok)
 		throw new Error(`Track sections snapshot returned HTTP ${response.status}`);
 

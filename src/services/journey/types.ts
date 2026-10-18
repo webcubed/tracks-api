@@ -1,6 +1,9 @@
 import type { AgencyId } from "@/constants";
 import type { Station, TransferIndex } from "@/services/network";
-import { AGENCY_IDS } from "@/constants";
+import { AGENCIES, AGENCY_IDS } from "@/constants";
+
+export type JourneyPreference = "fastest" | "fewerTransfers" | "lessWalking";
+export type JourneyMode = "subway" | "rail" | "bus";
 
 export type JourneyLeg = {
 	route: string;
@@ -10,13 +13,44 @@ export type JourneyLeg = {
 	tripId: string;
 	from: { id: string; name: string; time: string };
 	to: { id: string; name: string; time: string };
+	stops?: number;
 };
+
+export type JourneyStep =
+	| ({
+			kind: "ride";
+			durationSeconds: number;
+	  } & JourneyLeg)
+	| {
+			kind: "walk";
+			distanceMeters: number;
+			durationSeconds: number;
+			transferType: "in-complex" | "street";
+			from: {
+				id: string;
+				name: string;
+				agency: string;
+				time: string;
+				location: { lat: number; lon: number };
+			};
+			to: {
+				id: string;
+				name: string;
+				agency: string;
+				time: string;
+				location: { lat: number; lon: number };
+			};
+	  };
 
 export type Journey = {
 	departureTime: string;
 	arrivalTime: string;
 	durationMinutes: number;
+	walkingDurationSeconds: number;
+	walkingDistanceMeters: number;
+	transfers: number;
 	legs: JourneyLeg[];
+	steps: JourneyStep[];
 };
 
 export type ApiJourney = {
@@ -47,11 +81,28 @@ export type LegDesc = {
 	boardTime: string;
 	alightStop: string;
 	alightTime: string;
+	stops: number;
+};
+
+export type WalkDesc = {
+	distanceMeters: number;
+	durationSeconds: number;
+	transferType: "in-complex" | "street";
+	fromFeed: AgencyId;
+	fromStation: string;
+	fromLat: number;
+	fromLon: number;
+	fromTime: number;
+	toFeed: AgencyId;
+	toStation: string;
+	toLat: number;
+	toLon: number;
+	toTime: number;
 };
 
 export type Link =
 	| { kind: "start" }
-	| { kind: "walk"; from: Label }
+	| { kind: "walk"; walk: WalkDesc; from: Label }
 	| { kind: "ride"; leg: LegDesc; from: Label };
 
 /**
@@ -65,16 +116,24 @@ export type Label = {
 	lon: number;
 	arrival: number;
 	rides: number;
+	walkSeconds: number;
+	walkMeters: number;
 	/** Feed/route sequence so a faster route does not erase every alternative. */
 	pattern: string;
 	round: number;
 	via: Link;
 };
 
+export type StepDraft =
+	{ kind: "ride"; leg: LegDesc } | { kind: "walk"; walk: WalkDesc };
+
 export type ItineraryDraft = {
 	departure: number;
 	arrival: number;
+	walkSeconds: number;
+	walkMeters: number;
 	legs: LegDesc[];
+	steps: StepDraft[];
 };
 
 export type Search = {
@@ -84,6 +143,8 @@ export type Search = {
 	stationsById: Map<AgencyId, Map<string, Station>>;
 	transfers: Map<AgencyId, TransferIndex>;
 	destKey: string;
+	destLocation: { lat: number; lon: number };
+	allowedFeeds: ReadonlySet<AgencyId>;
 };
 
 export type Network = {
@@ -100,29 +161,61 @@ export const MAX_ITINERARIES = 5;
 export const MAX_RIDES = 4;
 /** Interchange buffer when changing trips within one station. */
 export const TRANSFER_S = 60;
-/** Cross-feed transfers are a walk. 500m covers the complexes GTFS pins
- * awkwardly (subway 34 St-Penn to LIRR Penn is 214m, GCT to Grand Central
- * Madison 418m, Atlantic Terminal/Barclays next to each other). */
-export const WALK_M = 500;
-export const WALK_S = 420;
+/**
+ * Street walking transfers up to 600 m (~7-8 minutes on foot). Covers
+ * Penn Station ↔ Herald Sq (380 m), Grand Central ↔ Grand Central Madison
+ * (418 m), and nearby bus-to-subway / bus-to-LIRR stops.
+ */
+export const WALK_M = 600;
+/** Realistic urban pedestrian speed (m/s) with a 1.25x Manhattan grid detour factor. */
+export const WALK_SPEED_MPS = 1.25;
+export const WALK_DETOUR_FACTOR = 1.25;
+/** Street crossing / station entrance overhead in seconds. */
+export const WALK_OVERHEAD_S = 45;
+
+/**
+ * Compute realistic street walking distance and duration from straight-line
+ * haversine distance in metres.
+ */
+export function walkMetrics(straightMeters: number): {
+	distanceMeters: number;
+	durationSeconds: number;
+} {
+	const distanceMeters = Math.max(
+		10,
+		Math.round(straightMeters * WALK_DETOUR_FACTOR)
+	);
+	const durationSeconds = Math.max(
+		TRANSFER_S,
+		Math.round(distanceMeters / WALK_SPEED_MPS + WALK_OVERHEAD_S)
+	);
+	return { distanceMeters, durationSeconds };
+}
+
 /** How far past the frontier a round boards; overnight headways hit 20 min. */
 export const WINDOW_S = 7200;
 /** Feeds a ride can board at all. */
 export const RIDE_FEEDS: readonly AgencyId[] = AGENCY_IDS;
 
-/** The rail feeds, which board on their own. */
+/** The rail feeds, which ship `transfers.txt`. */
 export const RAIL_FEEDS: readonly AgencyId[] = ["subway", "lirr"];
 
 /**
- * Every feed can be a useful leg, not only a bus endpoint. `boardRound` only
- * opens a feed's timetable when the current frontier has a reachable station
- * in that feed.
+ * Feeds eligible for boarding, filtered to the user's mode selection while
+ * always keeping the origin and destination feeds reachable if no modes filter
+ * was supplied.
  */
 export function rideFeedsFor(
-	..._agencies: readonly AgencyId[]
+	fromAgency: AgencyId,
+	toAgency: AgencyId,
+	modes?: ReadonlySet<JourneyMode>
 ): readonly AgencyId[] {
-	return RIDE_FEEDS;
+	if (!modes || modes.size === 0) return RIDE_FEEDS;
+
+	return AGENCY_IDS.filter(
+		(id) => modes.has(AGENCIES[id].mode) || id === fromAgency || id === toAgency
+	);
 }
 
-/** ~330 m cells so a 500 m walk stays inside a 5x5 block of them. */
+/** ~330 m cells so a 600 m walk stays inside a 5x5 block of them. */
 export const CELL_DEGREES = 0.003;
