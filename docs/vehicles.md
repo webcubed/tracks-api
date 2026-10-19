@@ -11,6 +11,8 @@
 
 Vehicle objects include an ID and route. Location and GeoJSON point geometry are included when available, along with optional bearing, speed, next stop, next stop ID, and occupancy.
 
+LIRR vehicles additionally carry `section` — the track section the train is on, spelled in the railroad's own designations (see [Train run](#train-run)) — and `positionSource`, which says where `location` came from: `gtfs-realtime`, the tracking system's own telemetry (`tracking-system`, the fallback for a train whose position is not out yet), or the coordinates of the stop it is at (`stop`).
+
 ## Response shape
 
 `data` is an array. Location, geometry, and the other live position fields are omitted when unavailable.
@@ -33,13 +35,29 @@ Vehicle objects include an ID and route. Location and GeoJSON point geometry are
 }
 ```
 
-The sample illustrates the shape; actual values depend on the realtime feed.
+The sample illustrates the shape; actual values depend on the realtime feed. An LIRR vehicle may read:
+
+```json
+{
+	"id": "GO202_26_8758_1_V",
+	"route": "7",
+	"location": { "lat": 40.6367, "lon": -73.7051 },
+	"section": {
+		"track": "W2",
+		"from": { "code": "WSE", "name": "WSE", "time": 1792357200 },
+		"to": { "code": "PSW", "name": "PSW", "time": 1792357560 }
+	},
+	"positionSource": "gtfs-realtime"
+}
+```
 
 ## Train run
 
 `GET /v1/vehicles/:id/route` describes what a live train actually does: every station, yard, junction and interlocking its run touches, in order, with the track it uses at each. It comes from the MTA's LIRR tracking system, which is the only place those operational locations are named, so it applies to the LIRR feed alone; `route` is required for the same reason the vehicle listing needs it — vehicle ids are unique only inside a route.
 
-The train is looked up by its number, which the live feed carries as part of the vehicle id, and the run is read from the station the train is next approaching. Names come from the feed's own stations; a location that is not a station (a yard or interlocking, such as `WSY` or `HAR`) is returned under its railroad code, because the static feed does not contain it. `events[].passed` marks the points already behind the train, and `error` is set when the run cannot be resolved — most often because the feed has not reported a next stop yet.
+The train is looked up by its number, which the live feed carries as part of the vehicle id, and the run is read from the station the train is next approaching. Names come from the feed's own stations; a location that is not a station (a yard or interlocking, such as `WSY` or `HAR`) is returned under its railroad code, because the static feed does not contain it. `events[].passed` marks the points already behind the train, `events[].departed` the ones it has left again, and `error` is set when the run cannot be resolved — most often because the feed has not reported a next stop yet.
+
+Every answer also carries `section`: the track section the train is on right now. `from` is the last location it reached, `to` the next on its run, and `track` is the railroad's designation for the track it is using — `W2` in West Side Yard, `R8` on the Main Line. The track is read from the point the train is sitting at while it stands there, and from the point ahead once it has left again. The section comes from the run where one is posted and from the tracking system's own stop list otherwise, so a train names its place before the realtime feed reports a position for it — including `error` answers. `nearby` (the closest infrastructure tag, e.g. `JAM-W`) and `turf` (the operational sector, with its length and the train's milepost on it) come from the same source.
 
 ```sh
 curl 'https://your-api.example/v1/vehicles/GO202_26_6178_V/route?agency=lirr&route=1'
@@ -55,6 +73,12 @@ curl 'https://your-api.example/v1/vehicles/GO202_26_6178_V/route?agency=lirr&rou
 		"direction": "E",
 		"station": { "code": "LHT", "name": "Lindenhurst" },
 		"source": "mta-radar-countdown",
+		"section": {
+			"track": "16",
+			"from": { "code": "NYK", "name": "Penn Station", "time": 1790548260 },
+			"to": { "code": "PSE", "name": "PSE", "time": 1790548320 }
+		},
+		"nearby": "NYK",
 		"events": [
 			{
 				"code": "WSY",
@@ -62,7 +86,8 @@ curl 'https://your-api.example/v1/vehicles/GO202_26_6178_V/route?agency=lirr&rou
 				"stopType": "EQUIPMENT",
 				"track": "09",
 				"time": 1790547300,
-				"passed": true
+				"passed": true,
+				"departed": true
 			},
 			{
 				"code": "NYK",
@@ -70,7 +95,8 @@ curl 'https://your-api.example/v1/vehicles/GO202_26_6178_V/route?agency=lirr&rou
 				"stopType": "STOP",
 				"track": "16",
 				"time": 1790548260,
-				"passed": true
+				"passed": true,
+				"departed": false
 			}
 		]
 	}

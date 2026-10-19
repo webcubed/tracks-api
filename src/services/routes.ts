@@ -104,7 +104,12 @@ const tripIndex = memoize(async (agency: AgencyId) => {
 				SELECT route_id, shape_id,
 					row_number() OVER (
 						PARTITION BY route_id
-						ORDER BY trips DESC, span DESC NULLS LAST, points DESC, shape_id
+						-- A shape with geometry always beats one without, however
+						-- often it is run: trips that carry no shape_id group into
+						-- their own phantom "shape", and on routes like the
+						-- 4, 6, 7, D and G that group outnumbers every real one.
+						-- Ranking it first drew no line at all for those routes.
+						ORDER BY span IS NULL, trips DESC, span DESC, points DESC, shape_id
 					) AS rank
 				FROM candidates
 				WHERE span IS NULL OR span >= widest - ${SPAN_SLACK}

@@ -1,7 +1,14 @@
 import type { AgencyId } from "@/constants";
+import type { RadarTrainInfo, TrackSection } from "@/services/trackSections";
 import { resolveStop } from "@/services/network";
 import { getCountdown, getLocations, isStationCode } from "@/services/radar";
 import { stationNameFor, stationNames } from "@/services/stationCodes";
+import {
+	matchRadarTrain,
+	radarTrains,
+	sectionFromEvents,
+	trainSegments,
+} from "@/services/trackSections";
 import { getVehicles } from "@/services/vehicles";
 
 /** One location a train's run touches: a station, a yard, an interlocking. */
@@ -20,7 +27,11 @@ export type TrainRouteEvent = {
 	time?: number;
 	/** True once the event has recorded times, i.e. the train was there. */
 	passed: boolean;
+	/** True once the event has recorded a departure, i.e. the train left again. */
+	departed: boolean;
 };
+
+export type { TrackSection } from "@/services/trackSections";
 
 export type TrainRoute = {
 	vehicle: { id: string; route: string };
@@ -33,6 +44,17 @@ export type TrainRoute = {
 	station?: { code: string; name: string };
 	source?: "mta-radar-countdown" | "mta-radar-locations";
 	events: TrainRouteEvent[];
+	/**
+	 * The track section the train is on: from the last location it reached to
+	 * the next ahead, with the track it uses (e.g. `W2` in West Side Yard).
+	 * Resolved from the run itself where one was posted, and from the tracking
+	 * system's own view otherwise — so it is known before a position is out.
+	 */
+	section?: TrackSection;
+	/** Closest infrastructure tag the tracking system reports, e.g. `JAM-W`. */
+	nearby?: string;
+	/** The operational sector the train is on. */
+	turf?: { length: number; locationMp: number };
 	/** Set when a route could not be resolved; `events` is empty. */
 	error?: string;
 };
@@ -71,21 +93,6 @@ type RadarTrain = {
 		stops?: RadarStop[];
 	};
 };
-
-function isDigits(value: string): boolean {
-	for (const character of value)
-		if (character < "0" || character > "9") return false;
-
-	return true;
-}
-
-/**
- * Numbers long enough to be a train number rather than a year or a fleet id.
- * An LIRR vehicle id names the run as its own segment (`GO202_26_2953_METS_V`).
- */
-function idTokens(id: string): string[] {
-	return id.split("_").filter((token) => token.length >= 3 && isDigits(token));
-}
 
 function timeOf(event: RadarEvent): number | undefined {
 	return (
@@ -127,6 +134,7 @@ function formatEvents(
 					event.act_arrive !== undefined ||
 					event.act_depart !== undefined ||
 					event.act_time !== undefined,
+				departed: event.act_depart !== undefined,
 			},
 		];
 	});
@@ -154,6 +162,8 @@ function formatStops(
 					stop.act_depart_time !== undefined ||
 					stop.act_arrive_time !== undefined ||
 					stop.act_time !== undefined,
+				departed:
+					stop.stop_status === "DEPARTED" || stop.act_depart_time !== undefined,
 			},
 		];
 	});
@@ -271,8 +281,9 @@ export async function getTrainRoute(
 		vehicle: { id: vehicle.id, route: vehicle.route },
 		events: [],
 	};
-	const tokens = new Set(idTokens(vehicle.id));
+	const tokens = new Set(trainSegments(vehicle.id));
 	const names = await stationNames("lirr");
+	const radar = matchRadarTrain(vehicle.id, await radarTrains());
 
 	const nextStop = vehicle.nextStopId
 		? await resolveStop(vehicle.nextStopId, "lirr")
@@ -286,7 +297,7 @@ export async function getTrainRoute(
 			names,
 			trainRoute
 		);
-		if (fromCountdown) return fromCountdown;
+		if (fromCountdown) return withTracking(fromCountdown, radar);
 	}
 
 	const fromLocations = await queryLocationsFallback(
@@ -295,20 +306,48 @@ export async function getTrainRoute(
 		names,
 		trainRoute
 	);
-	if (fromLocations) return fromLocations;
+	if (fromLocations) return withTracking(fromLocations, radar);
 
 	if (!isStationCode(nextCode)) {
-		return {
-			...trainRoute,
-			error:
-				"The feed has not reported this train's next stop yet, so its run cannot be looked up.",
-		};
+		return withTracking(
+			{
+				...trainRoute,
+				error:
+					"The feed has not reported this train's next stop yet, so its run cannot be looked up.",
+			},
+			radar
+		);
 	}
 
 	const station = { code: nextCode, name: stationNameFor(names, nextCode) };
+	return withTracking(
+		{
+			...trainRoute,
+			station,
+			error: `No run for this train is posted at ${station.name} yet.`,
+		},
+		radar
+	);
+}
+
+/**
+ * The train's track section and tracking telemetry, on every answer including
+ * the ones with no posted run: a train still in the yard names its section
+ * before the realtime feed reports a position for it.
+ */
+function withTracking(
+	trainRoute: TrainRoute,
+	radar: RadarTrainInfo | undefined
+): TrainRoute {
+	const section =
+		(trainRoute.events.length > 0
+			? sectionFromEvents(trainRoute.events)
+			: undefined) ?? radar?.section;
+
 	return {
 		...trainRoute,
-		station,
-		error: `No run for this train is posted at ${station.name} yet.`,
+		...(section ? { section } : {}),
+		...(radar?.nearby ? { nearby: radar.nearby } : {}),
+		...(radar?.turf ? { turf: radar.turf } : {}),
 	};
 }
