@@ -36,6 +36,8 @@ pnpm dev                    # tsx watch; server on :3000
 
 For a production start, use `pnpm build && pnpm start`. The server honors the platform-provided `PORT` environment variable (defaults to `3000`).
 
+`pnpm start` also builds the documentation on first start whenever `docs/.vitepress/dist` is missing (it is a gitignored artifact), so hosts whose build step only installs dependencies — Render, for one — still serve `/docs/`. This needs devDependencies to be installed; a production-only install logs a warning and serves the API without its docs.
+
 ## Quickstart
 
 ```sh

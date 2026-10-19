@@ -8,16 +8,16 @@
 	"license": "ISC",
 	"main": "index.js",
 	"scripts": {
+		"build": "vitepress build docs",
 		"convert": "tsx scripts/convert.ts",
 		"dev": "tsx watch --env-file=.env src/index.ts",
+		"docs:build": "vitepress build docs",
+		"docs:dev": "vitepress dev docs",
+		"docs:preview": "vitepress preview docs",
 		"format": "prettier --write .",
 		"lint": "xo .",
 		"lint:fix": "xo --fix",
-		"start": "MALLOC_ARENA_MAX=2 node --max-old-space-size=256 --import tsx src/index.ts",
-		"build": "vitepress build docs",
-		"docs:dev": "vitepress dev docs",
-		"docs:build": "vitepress build docs",
-		"docs:preview": "vitepress preview docs"
+		"start": "node scripts/ensure-docs.mjs && MALLOC_ARENA_MAX=2 node --max-old-space-size=256 --import tsx src/index.ts"
 	},
 	"dependencies": {
 		"@duckdb/duckdb-wasm": "1.33.1-dev45.0",
