@@ -135,6 +135,8 @@ Invalid station IDs/options return `400`. Upstream failures or malformed JSON re
 
 The names the MTA's own feeds never carry: yards, junctions, crossovers and signal boxes — "interlockings" to a rider — along the LIRR. The railroad's realtime feed knows codes such as `HAR` and `WSL` but gives them no coordinates, and no static feed lists them as stops, so OpenStreetMap is the only source that can place them on a map. A feature is kept only when an LIRR alignment runs within 400 m of it, its `operator` tag does not name another railroad, and no subway alignment is clearly closer than the LIRR's — the corridor query otherwise returns Metro-North interlockings and subway yards alongside the LIRR's own.
 
+Each feature carries the polyline it was mapped with as `geometry` (GeoJSON `[lon, lat]` pairs) when it is a way, and the unnamed track ways of a yard or siding are included as `kind: "track"` entries under the named feature their middle runs within 500 m of — the rails of a yard rather than a label of its own. A map can draw every `geometry` and label only the non-`track` entries. Snapshot versions before the geometry existed remain valid: `geometry` is optional.
+
 A monthly GitHub Actions workflow fetches the Overpass data, filters it to the LIRR alignments, and publishes a JSON snapshot as the `latest-rail-sections` release asset. This endpoint only reads that static asset and caches it in process; normal map loads never query Overpass. Set `RAIL_SECTIONS_URL` to use a different snapshot URL.
 
 ```json
@@ -144,7 +146,21 @@ A monthly GitHub Actions workflow fetches the Overpass data, filters it to the L
 			"name": "Babylon Yard",
 			"kind": "yard",
 			"location": { "lat": 40.7005, "lon": -73.3242 },
-			"distance": 41
+			"distance": 41,
+			"geometry": [
+				[-73.3251, 40.6998],
+				[-73.3233, 40.7012]
+			]
+		},
+		{
+			"name": "Babylon Yard",
+			"kind": "track",
+			"location": { "lat": 40.7007, "lon": -73.324 },
+			"distance": 41,
+			"geometry": [
+				[-73.3249, 40.7001],
+				[-73.3231, 40.7015]
+			]
 		}
 	],
 	"attribution": "© OpenStreetMap contributors",

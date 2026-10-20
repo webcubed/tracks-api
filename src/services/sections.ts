@@ -40,6 +40,16 @@ const RAILWAY_TAGS = [
 const CORRIDOR_METRES = 400;
 
 /**
+ * Track ways collected for their rails rather than their name: main-line
+ * track is already drawn from the GTFS shapes, so only the yard, siding,
+ * spur and crossover ways that give a complex its shape are wanted.
+ */
+const UNNAMED_TRACK_TAGS = ["yard", "siding", "spur", "crossover"];
+
+/** How close to a named feature an unnamed track way has to be to belong to it. */
+const TRACK_ATTACH_METRES = 500;
+
+/**
  * Railroads whose infrastructure shares the LIRR's corridor — the same ground,
  * a different operator — reported in OpenStreetMap's `operator` tag.
  */
@@ -55,23 +65,55 @@ const OTHER_RAILWAY_MARGIN_METRES = 60;
 
 export type RailSection = {
 	name: string;
-	/** The OpenStreetMap tag the feature was mapped with, e.g. `yard`. */
+	/**
+	 * The OpenStreetMap tag the feature was mapped with, e.g. `yard`. `track`
+	 * marks an unnamed track way collected under the named feature it belongs
+	 * to — the rails of a yard rather than the yard's label.
+	 */
 	kind: string;
 	location: Point;
 	/** Metres from the nearest point of a route's alignment. */
 	distance: number;
+	/** The way's polyline as GeoJSON `[lon, lat]` pairs, when it has one. */
+	geometry?: Array<[number, number]>;
 };
 
 type OverpassElement = {
 	type?: string;
+	id?: number;
 	lat?: number;
 	lon?: number;
 	center?: { lat?: number; lon?: number };
+	geometry?: Array<{ lat?: number; lon?: number }>;
 	tags?: Record<string, string>;
 };
 
 function isOverpassElement(value: unknown): value is OverpassElement {
 	return typeof value === "object" && value !== null;
+}
+
+/** A way's polyline as GeoJSON `[lon, lat]` pairs; nodes have none. */
+function polylineOf(
+	element: OverpassElement
+): Array<[number, number]> | undefined {
+	const points = element.geometry?.filter(
+		(point): point is { lat: number; lon: number } =>
+			point.lat !== undefined && point.lon !== undefined
+	);
+	if (!points?.length) return undefined;
+
+	const line: Array<[number, number]> = [];
+	for (const point of points) line.push([point.lon, point.lat]);
+
+	return line;
+}
+
+/** The middle of a polyline, standing in for the way's labelled location. */
+function midpointOf(line: Array<[number, number]>): Point {
+	const a = line[Math.floor((line.length - 1) / 2)];
+	const b = line[Math.floor(line.length / 2)];
+
+	return { lat: (a[1] + b[1]) / 2, lon: (a[0] + b[0]) / 2 };
 }
 
 /**
@@ -131,7 +173,14 @@ async function askOverpass(url: string, query: string): Promise<unknown> {
 	return response.json();
 }
 
-/** Every named feature of the given kinds inside the corridor. */
+/**
+ * Every named feature of the given kinds inside the corridor, plus the
+ * unnamed track ways of yards and sidings — those are the rails a reader
+ * expects to see under a yard name, and they carry no `name` or `ref` to
+ * query by. The track ways are gathered only around the named features
+ * (Overpass asks to be queried sparingly, and a metro-wide siding query is
+ * neither); `out geom` returns each way's polyline, nodes answer as points.
+ */
 function sectionQuery(): string {
 	const box = `${CORRIDOR.south},${CORRIDOR.west},${CORRIDOR.north},${CORRIDOR.east}`;
 	const parts = RAILWAY_TAGS.flatMap((tag) => [
@@ -139,8 +188,15 @@ function sectionQuery(): string {
 		`  node["railway"="${tag}"]["name"](${box});`,
 	]);
 	parts.push(`  way["landuse"="railway"]["name"](${box});`);
+	const tracks = UNNAMED_TRACK_TAGS.map(
+		(tag) => `  way["railway"="${tag}"](around:${TRACK_ATTACH_METRES}, .named);`
+	);
+	// `railway=rail` yard track is the other half of the same rails.
+	tracks.push(
+		`  way["railway"="rail"]["service"="yard"](around:${TRACK_ATTACH_METRES}, .named);`
+	);
 
-	return `[out:json][timeout:90];\n(\n${parts.join("\n")}\n);\nout tags center;`;
+	return `[out:json][timeout:90];\n(\n${parts.join("\n")}\n)->.named;\n(\n  .named;\n${tracks.join("\n")}\n);\nout geom;`;
 }
 
 /** The monthly workflow asks one configured Overpass instance and exits. */
@@ -160,7 +216,7 @@ function overpassElements(payload: unknown): OverpassElement[] {
 		: [];
 }
 
-type Alignments = {
+export type Alignments = {
 	/** LIRR routes: a feature this close is a candidate. */
 	lirr: Array<Array<[number, number]>>;
 	/** Subway routes, which share the corridor at Queens and Brooklyn yards. */
@@ -212,8 +268,12 @@ function sectionFor(
 	lines: Alignments
 ): { key: string; section: RailSection } | undefined {
 	const name = element.tags?.name?.trim();
-	const lat = element.center?.lat ?? element.lat;
-	const lon = element.center?.lon ?? element.lon;
+	// `out geom` sends a way's polyline but no `center`, so a way stands at
+	// the middle of its own line.
+	const geometry = polylineOf(element);
+	const midpoint = geometry ? midpointOf(geometry) : undefined;
+	const lat = element.center?.lat ?? element.lat ?? midpoint?.lat;
+	const lon = element.center?.lon ?? element.lon ?? midpoint?.lon;
 	if (!name || lat === undefined || lon === undefined) return undefined;
 
 	const operator = element.tags?.operator?.toLowerCase() ?? "";
@@ -240,19 +300,88 @@ function sectionFor(
 			kind: element.tags?.railway ?? "landuse",
 			location,
 			distance: Math.round(distance),
+			...(geometry ? { geometry } : {}),
 		},
 	};
 }
 
-/** Named rail features in the corridor, straight from Overpass. */
-export async function fetchRailSections(): Promise<RailSection[]> {
-	const [payload, lines] = await Promise.all([
-		askOverpassForSections(sectionQuery()),
-		alignments(),
-	]);
+/**
+ * The unnamed track ways of a yard or siding — `railway=rail` with
+ * `service=yard`, or the yard/siding/spur/crossover ways themselves. They
+ * carry no `name` or `ref` to label, and exist here for the rails they draw.
+ */
+function isTrackWay(element: OverpassElement): boolean {
+	const tags = element.tags ?? {};
+	if (tags.name?.trim() || tags.ref?.trim()) return false;
+	if (tags.railway === "rail") return tags.service === "yard";
 
+	return UNNAMED_TRACK_TAGS.includes(tags.railway ?? "");
+}
+
+/**
+ * The named feature a track way belongs to: whichever label its middle runs
+ * under. The middle (not the nearest point) keeps a long track with one end
+ * near a signal box attached to the yard it actually lies in.
+ */
+function ownerOf(
+	midpoint: Point,
+	named: Map<string, RailSection>
+): RailSection | undefined {
+	let owner: RailSection | undefined;
+	let closest = TRACK_ATTACH_METRES;
+
+	for (const section of named.values()) {
+		const metres = distanceMeters(midpoint, section.location);
+		if (metres < closest) {
+			closest = metres;
+			owner = section;
+		}
+	}
+
+	return owner;
+}
+
+/** Track rails under their named feature, one entry per way. */
+function trackWaysFor(
+	elements: OverpassElement[],
+	named: Map<string, RailSection>,
+	lines: Alignments
+): RailSection[] {
+	const byWayId = new Map<number, RailSection>();
+
+	for (const element of elements) {
+		if (!isTrackWay(element)) continue;
+		const geometry = polylineOf(element);
+		if (!geometry || element.id === undefined) continue;
+		const midpoint = midpointOf(geometry);
+		const owner = ownerOf(midpoint, named);
+		if (!owner) continue;
+
+		byWayId.set(element.id, {
+			name: owner.name,
+			kind: "track",
+			location: midpoint,
+			distance: Math.round(nearestMetres(midpoint, lines.lirr)),
+			geometry,
+		});
+	}
+
+	return [...byWayId.values()];
+}
+
+/**
+ * The label set from raw Overpass elements: named features with their
+ * polylines, plus the unnamed track ways of the complex each belongs to
+ * (`kind: "track"`) so the rails themselves reach the map. Pure — the network
+ * side of `fetchRailSections` stays around it — so a test can feed it a
+ * payload without a live Overpass.
+ */
+export function sectionsFromElements(
+	elements: OverpassElement[],
+	lines: Alignments
+): RailSection[] {
 	const byNameAndPlace = new Map<string, RailSection>();
-	for (const element of overpassElements(payload)) {
+	for (const element of elements) {
 		const found = sectionFor(element, lines);
 		if (!found) continue;
 
@@ -263,9 +392,24 @@ export async function fetchRailSections(): Promise<RailSection[]> {
 			byNameAndPlace.set(found.key, found.section);
 	}
 
-	return [...byNameAndPlace.values()].toSorted((a, b) =>
-		a.name.localeCompare(b.name)
-	);
+	return [
+		...byNameAndPlace.values(),
+		...trackWaysFor(elements, byNameAndPlace, lines),
+	].toSorted((a, b) => a.name.localeCompare(b.name));
+}
+
+/**
+ * Named rail features in the corridor, straight from Overpass, each with the
+ * polyline it was mapped with, plus the unnamed track ways of the complex it
+ * belongs to (`kind: "track"`) so the rails themselves reach the map.
+ */
+export async function fetchRailSections(): Promise<RailSection[]> {
+	const [payload, lines] = await Promise.all([
+		askOverpassForSections(sectionQuery()),
+		alignments(),
+	]);
+
+	return sectionsFromElements(overpassElements(payload), lines);
 }
 
 /** Public static snapshot, regenerated monthly by `.github/workflows/update-rail-sections.yml`. */

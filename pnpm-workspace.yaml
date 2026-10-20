@@ -1,3 +1,8 @@
+# `packages` is here for pnpm 9, which refuses a workspace file without it
+# ("packages field missing or empty"); a settings-only file needs pnpm 10.5+.
+# This repo is a single package, so the workspace is just the root.
+packages:
+  - "."
 allowBuilds:
   esbuild: true
   unrs-resolver: true
