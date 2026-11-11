@@ -24,14 +24,14 @@ import { activeServices } from "@/services/schedule";
  * dense frontier never generates a 1,000-placeholder DuckDB query over a
  * 20 MB remote Parquet file.
  */
-const MAX_BUS_FRONTIER_STATIONS = 32;
+const MAX_BUS_FRONTIER_STATIONS = 48;
 
 /**
  * Once we have at least `MAX_ITINERARIES` destination arrivals, prune frontier
  * labels that are already past `earliestDestinationArrival + SLACK_S` so late
  * rounds don't keep scanning unreachable branches.
  */
-const DESTINATION_PRUNE_SLACK_S = 2400;
+const DESTINATION_PRUNE_SLACK_S = 4200;
 
 function hasEnoughDestinationArrivals(search: Search): boolean {
 	const destLabels = search.labels.get(search.destKey);
@@ -61,8 +61,12 @@ function collectRoundFrontier(
 	round: number,
 	cutoff: number
 ): Map<AgencyId, Label[]> {
+	// Only the final round gives up on bus labels. Skipping them a round early
+	// dropped slower but useful mixed trips (bus, then two subway legs) before
+	// they reached the destination.
 	const skipBusFeeds =
-		(round === 4 || (round >= 3 && hasEnoughDestinationArrivals(search))) &&
+		round === 4 &&
+		hasEnoughDestinationArrivals(search) &&
 		!search.destKey.startsWith("bus_");
 	const frontierByFeed = new Map<AgencyId, Label[]>();
 
@@ -86,7 +90,7 @@ function shouldSkipFeedScan(
 	feed: AgencyId
 ): boolean {
 	return (
-		round >= 2 &&
+		round === 4 &&
 		feed.startsWith("bus_") &&
 		hasEnoughDestinationArrivals(search) &&
 		!search.destKey.startsWith("bus_")
@@ -195,7 +199,7 @@ async function planFeed(
 	// Timetable rows are minute-granularity. Expand each search window to
 	// five-minute boundaries so nearby requests reuse the same remote scan;
 	// rideTrip still checks every departure against the exact label time.
-	const windowSpan = feed.startsWith("bus_") ? 3600 : WINDOW_S;
+	const windowSpan = feed.startsWith("bus_") ? 5400 : WINDOW_S;
 	const window = {
 		min: Math.max(0, Math.floor((earliest - TRANSFER_S) / 300) * 300),
 		max: Math.ceil((earliest + windowSpan) / 300) * 300,
