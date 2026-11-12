@@ -2,6 +2,7 @@ import type { SectionEvent, SectionStop } from "@/services/trackSections";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+	consistOf,
 	matchRadarTrain,
 	sectionFromEvents,
 	sectionFromStops,
@@ -179,6 +180,53 @@ void test("a vehicle id names its run as one of its segments", () => {
 		"1",
 		"V",
 	]);
+});
+
+void test("a reported consist keeps each car's occupancy and count", () => {
+	const consist = consistOf({
+		consist: {
+			fleet: "M7",
+			actual_len: 2,
+			sched_len: 2,
+			occupancy: "EMPTY",
+			occupancy_timestamp: 1_700_000_000,
+			cars: [
+				{
+					number: 7488,
+					type: "M7",
+					loading: "EMPTY",
+					passengers: 0,
+					revenue: true,
+					restroom: false,
+				},
+				{ type: "DE30AC", locomotive: true, revenue: false },
+			],
+		},
+	});
+
+	assert.deepEqual(consist, {
+		fleet: "M7",
+		cars: [
+			{
+				number: 7488,
+				type: "M7",
+				loading: "EMPTY",
+				passengers: 0,
+				restroom: false,
+				revenue: true,
+			},
+			{ type: "DE30AC", locomotive: true, revenue: false },
+		],
+		actualLength: 2,
+		scheduledLength: 2,
+		occupancy: "EMPTY",
+		updatedAt: 1_700_000_000,
+	});
+});
+
+void test("a consist without car details is left out", () => {
+	assert.equal(consistOf({}), undefined);
+	assert.equal(consistOf({ consist: { cars: [] } }), undefined);
 });
 
 void test("a GO id's run is its only train-number token", () => {

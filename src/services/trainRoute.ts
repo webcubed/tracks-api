@@ -1,5 +1,9 @@
 import type { AgencyId } from "@/constants";
-import type { RadarTrainInfo, TrackSection } from "@/services/trackSections";
+import type {
+	RadarTrainInfo,
+	TrackSection,
+	TrainConsist,
+} from "@/services/trackSections";
 import { resolveStop } from "@/services/network";
 import { getCountdown, getLocations, isStationCode } from "@/services/radar";
 import { stationNameFor, stationNames } from "@/services/stationCodes";
@@ -55,6 +59,8 @@ export type TrainRoute = {
 	nearby?: string;
 	/** The operational sector the train is on. */
 	turf?: { length: number; locationMp: number };
+	/** Cars and their occupancy, when the railroad reports a consist. */
+	consist?: TrainConsist;
 	/** Set when a route could not be resolved; `events` is empty. */
 	error?: string;
 };
@@ -353,5 +359,6 @@ function withTracking(
 		...(section ? { section } : {}),
 		...(radar?.nearby ? { nearby: radar.nearby } : {}),
 		...(radar?.turf ? { turf: radar.turf } : {}),
+		...(radar?.consist ? { consist: radar.consist } : {}),
 	};
 }

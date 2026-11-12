@@ -30,6 +30,34 @@ export type TrackSection = {
 	to?: TrackSectionPoint;
 };
 
+/** One car in a train's consist, as the LIRR tracking system reports it. */
+export type TrainCar = {
+	/** The railroad's car number, e.g. `7488`. */
+	number?: number;
+	/** The car class, e.g. `M7`. */
+	type?: string;
+	/** Occupancy value such as `EMPTY`, `MANY_SEATS` or `FEW_SEATS`. */
+	loading?: string;
+	/** Riders counted aboard this car, when the railroad reports a count. */
+	passengers?: number;
+	restroom?: boolean;
+	revenue?: boolean;
+	bikes?: number;
+	locomotive?: boolean;
+};
+
+/** The cars making up one train, in the order the tracking system lists them. */
+export type TrainConsist = {
+	fleet?: string;
+	cars: TrainCar[];
+	/** Car count the railroad reports, which can differ from `cars.length`. */
+	actualLength?: number;
+	scheduledLength?: number;
+	/** Occupancy for the whole train, using the same values as a car. */
+	occupancy?: string;
+	updatedAt?: number;
+};
+
 /** The event shape both run lookups produce; kept structural to avoid a cycle. */
 export type SectionEvent = {
 	code: string;
@@ -193,6 +221,8 @@ export type RadarTrainInfo = {
 	nearby?: string;
 	/** The operational sector the train is on. */
 	turf?: { length: number; locationMp: number };
+	/** Cars and their occupancy, when the train is reporting a consist. */
+	consist?: TrainConsist;
 };
 
 type RadarEvent = {
@@ -219,6 +249,26 @@ type RadarStop = {
 	act_time?: number;
 };
 
+type RadarCar = {
+	type?: string;
+	number?: number;
+	loading?: string;
+	passengers?: number;
+	restroom?: boolean;
+	revenue?: boolean;
+	bikes?: number;
+	locomotive?: boolean;
+};
+
+type RadarConsist = {
+	fleet?: string;
+	cars?: RadarCar[];
+	actual_len?: number;
+	sched_len?: number;
+	occupancy?: string;
+	occupancy_timestamp?: number;
+};
+
 type RadarTrain = {
 	train_num?: string;
 	details?: {
@@ -226,6 +276,7 @@ type RadarTrain = {
 		stops?: RadarStop[];
 		turf?: { length?: number; location_mp?: number };
 	};
+	consist?: RadarConsist;
 	location?: {
 		latitude?: number;
 		longitude?: number;
@@ -236,6 +287,40 @@ type RadarTrain = {
 
 function isRadarTrain(value: unknown): value is RadarTrain {
 	return typeof value === "object" && value !== null;
+}
+
+/** Keep only the fields the API publishes, with camelCase names. */
+export function consistOf(train: RadarTrain): TrainConsist | undefined {
+	const raw = train.consist;
+	if (!raw) return undefined;
+
+	const cars = (raw.cars ?? []).flatMap((car) => {
+		if (car.number === undefined && !car.type) return [];
+		return [
+			{
+				...(car.number === undefined ? {} : { number: car.number }),
+				...(car.type ? { type: car.type } : {}),
+				...(car.loading ? { loading: car.loading } : {}),
+				...(car.passengers === undefined ? {} : { passengers: car.passengers }),
+				...(car.restroom === undefined ? {} : { restroom: car.restroom }),
+				...(car.revenue === undefined ? {} : { revenue: car.revenue }),
+				...(car.bikes === undefined ? {} : { bikes: car.bikes }),
+				...(car.locomotive === undefined ? {} : { locomotive: car.locomotive }),
+			},
+		];
+	});
+	if (cars.length === 0) return undefined;
+
+	return {
+		cars,
+		...(raw.fleet ? { fleet: raw.fleet } : {}),
+		...(raw.actual_len === undefined ? {} : { actualLength: raw.actual_len }),
+		...(raw.sched_len === undefined ? {} : { scheduledLength: raw.sched_len }),
+		...(raw.occupancy ? { occupancy: raw.occupancy } : {}),
+		...(raw.occupancy_timestamp === undefined
+			? {}
+			: { updatedAt: raw.occupancy_timestamp }),
+	};
 }
 
 function eventTime(event: RadarEvent): number | undefined {
@@ -399,6 +484,7 @@ function addTrain(
 		location: existing.location ?? incoming.location,
 		nearby: existing.nearby ?? incoming.nearby,
 		turf: existing.turf ?? incoming.turf,
+		consist: existing.consist ?? incoming.consist,
 	});
 }
 
@@ -425,6 +511,7 @@ function infoOf(
 	const section = fromBoard
 		? (sectionFromEvents(eventsOf(train, names)) ?? sectionOf(train, names))
 		: sectionOf(train, names);
+	const consist = consistOf(train);
 
 	return {
 		train: (train.train_num ?? "").trim() || undefined,
@@ -432,6 +519,7 @@ function infoOf(
 		...(location ? { location } : {}),
 		...(nearby ? { nearby } : {}),
 		...(turf ? { turf } : {}),
+		...(consist ? { consist } : {}),
 	};
 }
 
