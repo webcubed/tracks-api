@@ -11,6 +11,8 @@ import { matchRadarTrain, radarTrains } from "@/services/trackSections";
 
 export type ApiVehicle = {
 	id: string;
+	/** Rider-facing vehicle label: an LIRR train number, when the feed posts one. */
+	label?: string;
 	route: string;
 	/** Absent only if the feed gives no coordinates and no resolvable stop. */
 	location?: { lat: number; lon: number };
@@ -245,6 +247,7 @@ export async function getVehiclesForAgency(
 
 		return {
 			id: entity.id ?? vehicle?.vehicle?.id ?? "",
+			...(vehicle?.vehicle?.label ? { label: vehicle.vehicle.label } : {}),
 			route,
 			location,
 			geometry: coordinates
@@ -260,6 +263,225 @@ export async function getVehiclesForAgency(
 		};
 	});
 }
+
+/** A vehicle search hit carries the feed it came from, which `route` alone cannot. */
+export type ApiVehicleSearchResult = ApiVehicle & { agency: AgencyId };
+
+type VehicleSearchHit = {
+	entity: FeedEntity;
+	feed: AgencyId;
+	routeId?: string;
+	tripId: string;
+	label?: string;
+	score: number;
+};
+
+/** Bus routes share one citywide vehicle feed; this maps a route back to its feed. */
+const busRouteFeeds = memoize(async () => {
+	const entries = await Promise.all(
+		AGENCY_IDS.filter((id) => id.startsWith("bus_")).map(
+			async (id) => [id, await getRoutes(id)] as const
+		)
+	);
+	const index = new Map<string, AgencyId>();
+	for (const [feed, routes] of entries) {
+		for (const route of routes) {
+			if (!index.has(route.id)) index.set(route.id, feed);
+		}
+	}
+
+	return index;
+});
+
+/**
+ * Search tokens a rider may type for one vehicle: the feed id, the vehicle id,
+ * its label, and the useful pieces of an LIRR or subway trip id. Subway vehicles
+ * have no `vehicle.id` in the MTA feed, so their six-digit entity id and the run
+ * token in `trip_id` (`N15R` in `129750_1..N15R`) are the searchable identities.
+ */
+function vehicleSearchTokens(entity: FeedEntity): Set<string> {
+	const { vehicle } = entity;
+	const tokens = new Set<string>();
+	const add = (value: string | undefined) => {
+		const normalized = value?.trim().toUpperCase().split(" ").join("");
+		if (!normalized) return;
+
+		tokens.add(normalized);
+		if (Number.isInteger(Number(normalized)))
+			tokens.add(String(Number(normalized)));
+	};
+
+	add(entity.id);
+	add(vehicle?.vehicle?.id);
+	add(vehicle?.vehicle?.label);
+	add(vehicle?.trip?.tripId);
+
+	for (const id of [entity.id, vehicle?.vehicle?.id]) {
+		for (const part of id?.split("_") ?? []) add(part);
+	}
+
+	const tripId = vehicle?.trip?.tripId ?? "";
+	const afterUnderscore = tripId.slice(tripId.indexOf("_") + 1);
+	add(afterUnderscore);
+	for (const part of afterUnderscore.split("..")) add(part);
+
+	return tokens;
+}
+
+function vehicleSearchScore(
+	entity: FeedEntity,
+	needle: string
+): number | undefined {
+	let best: number | undefined;
+	for (const token of vehicleSearchTokens(entity)) {
+		const score =
+			token === needle
+				? 100
+				: token.startsWith(needle)
+					? 70
+					: token.includes(needle)
+						? 40
+						: 0;
+		if (score > 0 && (best === undefined || score > best)) best = score;
+	}
+
+	return best;
+}
+
+/**
+ * Resolve a rider-typed vehicle id across subway, bus and LIRR. The raw feeds are
+ * searched first so a vehicle outside the map viewport is still found; only the
+ * routes that actually matched are then expanded into full map vehicles.
+ */
+async function findVehicles(
+	query: string,
+	agency?: AgencyId
+): Promise<ApiVehicleSearchResult[]> {
+	const needle = query.trim().toUpperCase().split(" ").join("");
+	if (needle.length < 2) return [];
+
+	const feeds: AgencyId[] = agency
+		? [agency.startsWith("bus_") ? "bus_bx" : agency]
+		: ["subway", "bus_bx", "lirr"];
+	const raw = await Promise.all(
+		feeds.map(async (feed) => {
+			const entities = await fetchRealtime(feed, ["*"]);
+			return entities.flatMap((entity): VehicleSearchHit[] => {
+				if (!entity.vehicle) return [];
+				const score = vehicleSearchScore(entity, needle);
+				if (score === undefined) return [];
+				const tripId = entity.vehicle.trip?.tripId;
+				if (!tripId) return [];
+
+				return [
+					{
+						entity,
+						feed,
+						routeId: entity.vehicle.trip?.routeId,
+						tripId,
+						label: entity.vehicle.vehicle?.label,
+						score,
+					},
+				];
+			});
+		})
+	);
+	const hits = raw.flat().toSorted((a, b) => b.score - a.score);
+	if (hits.length === 0) return [];
+
+	const lirrTripIds = [
+		...new Set(
+			hits
+				.filter((hit) => hit.feed === "lirr" && !hit.routeId)
+				.map((hit) => hit.tripId)
+		),
+	];
+	const [lirrTrips, busFeeds] = await Promise.all([
+		cachedTripLookup("lirr", lirrTripIds.toSorted()),
+		busRouteFeeds(),
+	]);
+
+	const resolved = hits.flatMap((hit) => {
+		const route = hit.routeId ?? lirrTrips.get(hit.tripId)?.routeId;
+		if (!route) return [];
+		const hitAgency = hit.feed.startsWith("bus_")
+			? busFeeds.get(route)
+			: hit.feed;
+		if (!hitAgency || (agency && hitAgency !== agency)) return [];
+		return [{ ...hit, agency: hitAgency, route }];
+	});
+	if (resolved.length === 0) return [];
+
+	const groups = new Map<
+		string,
+		{ agency: AgencyId; route: string; ids: Set<string> }
+	>();
+
+	for (const hit of resolved.slice(0, 40)) {
+		const key = `${hit.agency}:${hit.route}`;
+		let group = groups.get(key);
+		if (!group) {
+			group = { agency: hit.agency, route: hit.route, ids: new Set() };
+			groups.set(key, group);
+		}
+
+		const id = hit.entity.id ?? hit.entity.vehicle?.vehicle?.id;
+		if (id) group.ids.add(id);
+	}
+
+	const vehicles = await Promise.all(
+		[...groups.values()].map(async (group) => {
+			const found = await getVehiclesForAgency(group.agency, [group.route]);
+			return found
+				.filter((vehicle) => group.ids.has(vehicle.id))
+				.map((vehicle) => ({
+					...vehicle,
+					agency: group.agency,
+				}));
+		})
+	);
+	const byKey = new Map(
+		vehicles
+			.flat()
+			.map((vehicle) => [`${vehicle.agency}:${vehicle.id}`, vehicle])
+	);
+	const seen = new Set<string>();
+	const results: ApiVehicleSearchResult[] = [];
+
+	for (const hit of resolved) {
+		const id = hit.entity.id ?? hit.entity.vehicle?.vehicle?.id;
+		if (!id) continue;
+		const key = `${hit.agency}:${id}`;
+		if (seen.has(key)) continue;
+		const vehicle = byKey.get(key);
+		if (!vehicle) continue;
+		seen.add(key);
+		results.push({
+			...vehicle,
+			...(vehicle.label
+				? {}
+				: hit.label
+					? { label: hit.label }
+					: resolveLabel(vehicle.id, hit.agency)),
+		});
+		if (results.length === 20) break;
+	}
+
+	return results;
+}
+
+/** A readable fallback where the feed has no label: the bus fleet number. */
+function resolveLabel(id: string, agency: AgencyId): { label?: string } {
+	if (agency.startsWith("bus_")) {
+		const fleet = id.split("_").at(-1);
+
+		return fleet ? { label: fleet } : {};
+	}
+
+	return {};
+}
+
+export const searchVehicles = memoize(findVehicles, FEED_TTL_MS, 50);
 
 /**
  * Where the train is: the feed's own coordinates where it has them, else the

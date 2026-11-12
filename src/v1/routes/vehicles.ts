@@ -1,13 +1,29 @@
 import type { AgencyId } from "@/constants";
-import type { ApiVehicle } from "@/services/vehicles";
+import type { ApiVehicle, ApiVehicleSearchResult } from "@/services/vehicles";
 import { isAgencyId } from "@/constants";
 import { getTrainRoute } from "@/services/trainRoute";
-import { getVehicles, getVehiclesForAgency } from "@/services/vehicles";
+import {
+	getVehicles,
+	getVehiclesForAgency,
+	searchVehicles,
+} from "@/services/vehicles";
 import { type ApiResponse } from "@/types/api";
 import { optionalAgency } from "@/v1/middleware";
 import { Hono } from "hono";
 
 export const vehicles = new Hono();
+
+/**
+ * Find a live vehicle by the id a rider types: a subway train id or run token,
+ * a bus fleet number, or an LIRR train number. Feed search is citywide, so the
+ * vehicle does not need to be inside the current map viewport.
+ */
+vehicles.get("/search", optionalAgency, async (c) => {
+	const query = c.req.query("q")?.trim() ?? "";
+	const data =
+		query.length < 2 ? [] : await searchVehicles(query, c.get("agency"));
+	return c.json<ApiResponse<ApiVehicleSearchResult[]>>({ data });
+});
 
 /** One response per feed, optionally narrowed to the visible routes and map box. */
 vehicles.get("/feed", async (c) => {

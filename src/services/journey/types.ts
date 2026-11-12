@@ -14,6 +14,14 @@ export type JourneyLeg = {
 	from: { id: string; name: string; time: string };
 	to: { id: string; name: string; time: string };
 	stops?: number;
+	/** The stops passed through between boarding and alighting, in travel order. */
+	intermediateStops?: JourneyIntermediateStop[];
+};
+
+export type JourneyIntermediateStop = {
+	id: string;
+	name: string;
+	time: string;
 };
 
 export type JourneyStep =
@@ -82,6 +90,7 @@ export type LegDesc = {
 	alightStop: string;
 	alightTime: string;
 	stops: number;
+	intermediateStops: Array<{ id: string; time: string }>;
 };
 
 export type WalkDesc = {

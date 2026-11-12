@@ -239,6 +239,8 @@ function collectDraftEntities(drafts: readonly ItineraryDraft[]): {
 			if (step.kind === "ride") {
 				addStop(step.leg.agency, step.leg.boardStop);
 				addStop(step.leg.agency, step.leg.alightStop);
+				for (const stop of step.leg.intermediateStops)
+					addStop(step.leg.agency, stop.id);
 				addShape(step.leg.agency, step.leg.shapeId);
 			} else {
 				addStop(step.walk.fromFeed, step.walk.fromStation);
@@ -358,6 +360,14 @@ function renderLeg(
 		direction: directionsByAgency.get(leg.agency)?.get(leg.shapeId ?? "") ?? "",
 		tripId: leg.tripId,
 		stops: leg.stops,
+		intermediateStops: leg.intermediateStops.map((stop) => {
+			const ref = refs?.get(stop.id);
+			return {
+				id: ref?.id ?? stop.id,
+				name: ref?.name ?? "",
+				time: stop.time,
+			};
+		}),
 		from: {
 			id: fromRef?.id ?? leg.boardStop,
 			name: fromRef?.name ?? "",

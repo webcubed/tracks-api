@@ -33,7 +33,7 @@ export type FeedTripUpdate = {
 	trip?: FeedTrip;
 	delay?: number;
 	stopTimeUpdate?: FeedStopTimeUpdate[];
-	vehicle?: { id?: string };
+	vehicle?: { id?: string; label?: string };
 	timestamp?: string;
 };
 
@@ -50,7 +50,7 @@ export type FeedVehicle = {
 	currentStopSequence?: number;
 	currentStatus?: string;
 	occupancyStatus?: string;
-	vehicle?: { id?: string };
+	vehicle?: { id?: string; label?: string };
 	timestamp?: string;
 };
 

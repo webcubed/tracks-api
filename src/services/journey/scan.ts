@@ -289,6 +289,13 @@ function rideTrip(search: Search, scan: RideScan): number {
 						alightStop: row.stop_id,
 						alightTime: row.arrival_time,
 						stops: index - boardIndex,
+						intermediateStops: rows
+							.slice(boardIndex + 1, index)
+							.filter((stop) => stop.arrival_time !== "")
+							.map((stop) => ({
+								id: stop.stop_id,
+								time: stop.arrival_time,
+							})),
 					},
 					from: boardLabel,
 				},

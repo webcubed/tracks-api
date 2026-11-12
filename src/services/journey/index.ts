@@ -16,6 +16,7 @@ import { transferIndex } from "@/services/network";
 export type {
 	ApiJourney,
 	Journey,
+	JourneyIntermediateStop,
 	JourneyLeg,
 	JourneyMode,
 	JourneyPreference,

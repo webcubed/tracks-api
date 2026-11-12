@@ -2,6 +2,8 @@
 
 `GET /v1/vehicles` returns realtime vehicle positions for a route. The map uses `GET /v1/vehicles/feed` instead: one request per visible feed, optionally narrowed to routes and a geographic viewport, rather than one request per route.
 
+`GET /v1/vehicles/search?q=…` finds a vehicle by the id a rider sees or types, without needing its route or map viewport. It searches the subway, bus and LIRR feeds together.
+
 ## Query parameters
 
 | Parameter | Required | Description                          |
@@ -49,6 +51,25 @@ The sample illustrates the shape; actual values depend on the realtime feed. An 
 	},
 	"positionSource": "gtfs-realtime"
 }
+```
+
+## Find by vehicle id
+
+`GET /v1/vehicles/search?q=7246` returns matching live vehicles across the subway, bus and LIRR feeds. `agency` optionally pins one feed, for example `agency=lirr` or `agency=bus_bx`. Queries shorter than two characters return an empty `data` array.
+
+The accepted forms follow what each MTA feed publishes:
+
+| Mode | Searchable id | Example |
+| --- | --- | --- |
+| Subway | Six-digit entity id, full trip id, or run token | `000002`, `129750_1..N15R`, `N15R` |
+| Bus | Fleet number or full vehicle id | `9770`, `MTA NYCT_9770` |
+| LIRR | Train number or feed vehicle id | `7246`, `7246_288` |
+
+Results include `agency` and, where the feed provides one, the rider-facing `label` (an LIRR train number or bus fleet number). Search results are live vehicles only; a vehicle that has left the feed is not returned.
+
+```sh
+curl 'https://your-api.example/v1/vehicles/search?q=7246'
+curl 'https://your-api.example/v1/vehicles/search?q=9770&agency=bus_bx'
 ```
 
 ## Train run
