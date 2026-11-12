@@ -210,20 +210,16 @@ export const RIDE_FEEDS: readonly AgencyId[] = AGENCY_IDS;
 export const RAIL_FEEDS: readonly AgencyId[] = ["subway", "lirr"];
 
 /**
- * Feeds eligible for boarding, filtered to the user's mode selection while
- * always keeping the origin and destination feeds reachable if no modes filter
- * was supplied.
+ * Feeds eligible for boarding, filtered to the user's mode selection. A
+ * deselected network stays out even when it serves an endpoint, so an origin
+ * there can still walk to an allowed one without riding it.
  */
 export function rideFeedsFor(
-	fromAgency: AgencyId,
-	toAgency: AgencyId,
 	modes?: ReadonlySet<JourneyMode>
 ): readonly AgencyId[] {
 	if (!modes || modes.size === 0) return RIDE_FEEDS;
 
-	return AGENCY_IDS.filter(
-		(id) => modes.has(AGENCIES[id].mode) || id === fromAgency || id === toAgency
-	);
+	return AGENCY_IDS.filter((id) => modes.has(AGENCIES[id].mode));
 }
 
 /** ~330 m cells so a 600 m walk stays inside a 5x5 block of them. */

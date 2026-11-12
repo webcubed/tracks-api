@@ -63,7 +63,7 @@ export async function planJourney(
 		return { ...base, itineraries: [] };
 	}
 
-	const feeds = rideFeedsFor(from.agency, to.agency, modes);
+	const feeds = rideFeedsFor(modes);
 	const allowedFeeds = new Set(feeds);
 
 	const [network, transferIndexes] = await Promise.all([
