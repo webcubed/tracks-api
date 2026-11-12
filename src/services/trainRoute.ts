@@ -7,7 +7,7 @@ import {
 	matchRadarTrain,
 	radarTrains,
 	sectionFromEvents,
-	trainSegments,
+	trainRun,
 } from "@/services/trackSections";
 import { getVehicles } from "@/services/vehicles";
 
@@ -281,7 +281,11 @@ export async function getTrainRoute(
 		vehicle: { id: vehicle.id, route: vehicle.route },
 		events: [],
 	};
-	const tokens = new Set(trainSegments(vehicle.id));
+	const run = trainRun(vehicle.id);
+	// Only the run segment can match a tracking train. The date is a train
+	// number in the feed too, so using every segment gave much of the railroad
+	// the same run and track section.
+	const tokens = new Set(run ? [run] : []);
 	const names = await stationNames("lirr");
 	const radar = matchRadarTrain(vehicle.id, await radarTrains());
 

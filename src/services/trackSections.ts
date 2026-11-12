@@ -173,6 +173,17 @@ export function trainSegments(id: string): string[] {
 		.filter(Boolean);
 }
 
+/**
+ * The run a vehicle id names. A GO id is `<day>_<date>_<run>_<direction>_V`,
+ * and only its run segment is a train number: including the date once matched
+ * train `26` for every train on the 26th. Equipment moves use their id.
+ */
+export function trainRun(vehicleId: string): string | undefined {
+	const segments = trainSegments(vehicleId.trim());
+	if (segments.length === 0) return undefined;
+	return segments[0]?.startsWith("GO") ? segments[2] : segments[0];
+}
+
 /** What the tracking system knows about one live train. */
 export type RadarTrainInfo = {
 	train?: string;
@@ -433,11 +444,6 @@ export function matchRadarTrain(
 	const direct = trains.get(id);
 	if (direct) return direct;
 
-	const segments = trainSegments(id);
-	// A GO id is `<day>_<date>_<run>_<direction>_V`. Its date fragments are
-	// not run numbers: searching every segment once matched train `26` for
-	// every train, giving them all the same section.
-	const isGoId = segments[0]?.startsWith("GO") ?? false;
-	const run = isGoId ? segments[2] : segments[0];
+	const run = trainRun(id);
 	return run ? trains.get(run) : undefined;
 }

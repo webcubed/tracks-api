@@ -5,6 +5,7 @@ import {
 	matchRadarTrain,
 	sectionFromEvents,
 	sectionFromStops,
+	trainRun,
 	trainSegments,
 } from "@/services/trackSections";
 
@@ -178,6 +179,13 @@ void test("a vehicle id names its run as one of its segments", () => {
 		"1",
 		"V",
 	]);
+});
+
+void test("a GO id's run is its only train-number token", () => {
+	assert.equal(trainRun("GO202_26_8758_1_V"), "8758");
+	assert.equal(trainRun("GO202_26_RA2KOX_V"), "RA2KOX");
+	assert.equal(trainRun("GO203_26_472_2971_METS_V"), "472");
+	assert.equal(trainRun("RA2KOX"), "RA2KOX");
 });
 
 void test("a date fragment that is also a train number never wins", () => {
