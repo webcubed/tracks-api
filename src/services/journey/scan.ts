@@ -9,6 +9,7 @@ import type { Station, StopRef } from "@/services/network";
 import { AGENCY_IDS, getJourneyIndexUrl, getStaticFeedUrl } from "@/constants";
 import { memoize } from "@/lib/memoize";
 import { runQuery } from "@/lib/parquet";
+import { cachedParquet } from "@/lib/parquetCache";
 import { clockOf, clockSeconds } from "@/lib/time";
 import { admit, cellKey, drainWalks } from "@/services/journey/labels";
 import {
@@ -386,17 +387,21 @@ const timelines = memoize(
 				: getJourneyIndexUrl(agency, "timeline");
 
 			try {
+				const [boardingSource, timelineSource] = await Promise.all([
+					cachedParquet(boardingUrl),
+					cachedParquet(timelineUrl),
+				]);
 				rows = await runQuery<TimelineRow>(
 					`WITH boardable_trips AS (
 						SELECT DISTINCT b.trip_id
-						FROM read_parquet('${boardingUrl}') b
+						FROM read_parquet('${boardingSource}') b
 						WHERE b.stop_id IN (${stopIds.map(() => "?").join(", ")})
 						  AND b.departure_time >= ? AND b.departure_time <= ?
 						  AND b.service_id IN (${service.sql})
 					)
-					SELECT t.trip_id, t.stop_id, t.arrival_time, t.departure_time,
+										SELECT t.trip_id, t.stop_id, t.arrival_time, t.departure_time,
 						t.route_id, t.trip_headsign, t.shape_id
-					FROM read_parquet('${timelineUrl}') t
+					FROM read_parquet('${timelineSource}') t
 					JOIN boardable_trips b ON b.trip_id = t.trip_id
 					ORDER BY t.trip_id, CAST(t.stop_sequence AS INTEGER)`,
 					...stopIds,

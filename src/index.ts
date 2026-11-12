@@ -3,10 +3,11 @@ import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
-import { AGENCY_IDS } from "./constants";
+import { AGENCY_IDS, getJourneyIndexUrl } from "./constants";
 import { experimental } from "./experimental";
 import { loadTable } from "./lib/loadTable";
 import { clearMemoized } from "./lib/memoize";
+import { cachedParquet } from "./lib/parquetCache";
 import { getStations } from "./services/network";
 import { getRoutes } from "./services/routes";
 import { v1 } from "./v1";
@@ -88,15 +89,39 @@ function elapsed(startedAt: number): string {
 	return `${((Date.now() - startedAt) / 1000).toFixed(1)}s`;
 }
 
+/**
+ * Cache journey timetable indexes after the server starts accepting requests.
+ * The first journey otherwise pays for up to a dozen 10-20 MB downloads while
+ * its search waits; warming in feed order shares those in-flight downloads.
+ */
+async function warmJourneyIndexes(): Promise<void> {
+	if (process.env.JOURNEY_PARQUET_PREWARM === "0") return;
+	const startedAt = Date.now();
+	console.info("[startup] Warming journey timetable indexes");
+
+	for (const feed of AGENCY_IDS) {
+		for (const index of ["boarding", "timeline"] as const) {
+			// eslint-disable-next-line no-await-in-loop
+			await cachedParquet(getJourneyIndexUrl(feed, index));
+		}
+	}
+
+	console.info(
+		`[startup] Journey timetable indexes ready in ${elapsed(startedAt)}`
+	);
+}
+
 // Spec: static tables refresh hourly. Clear-then-warm means requests during
 // the ~10s reload wait for fresh data rather than serving yesterday's tables.
 // honey: a failed refresh leaves the caches empty; the next request retries
 // through memoize's self-eviction instead of serving stale rows.
 setInterval(() => {
 	clearMemoized();
-	warmStatic("refresh").catch((error: unknown) => {
-		console.error("static refresh failed:", error);
-	});
+	warmStatic("refresh")
+		.then(warmJourneyIndexes)
+		.catch((error: unknown) => {
+			console.error("static refresh failed:", error);
+		});
 }, 3_600_000);
 
 serve({
@@ -108,4 +133,9 @@ serve({
 console.info(
 	`[startup] Server ready at http://localhost:${port} (startup took ${elapsed(startupStartedAt)})`
 );
+// Deliberately backgrounded so readiness never waits on timetable downloads.
+// eslint-disable-next-line unicorn/prefer-top-level-await
+warmJourneyIndexes().catch((error: unknown) => {
+	console.error("journey timetable warmup failed:", error);
+});
 export default app;
