@@ -179,3 +179,15 @@ void test("a vehicle id names its run as one of its segments", () => {
 		"V",
 	]);
 });
+
+void test("a date fragment that is also a train number never wins", () => {
+	// Train `26` exists in the tracking feed. It must not stand in for the
+	// `26` date fragment in every GO id.
+	const trains = new Map([
+		["26", { train: "26" }],
+		["8758", { train: "8758" }],
+	]);
+
+	assert.equal(matchRadarTrain("GO202_26_8758_1_V", trains)?.train, "8758");
+	assert.equal(matchRadarTrain("GO202_26_6760_V", trains), undefined);
+});

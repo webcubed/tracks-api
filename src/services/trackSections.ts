@@ -429,10 +429,15 @@ export function matchRadarTrain(
 	vehicleId: string,
 	trains: Map<string, RadarTrainInfo>
 ): RadarTrainInfo | undefined {
-	for (const segment of trainSegments(vehicleId)) {
-		const hit = trains.get(segment);
-		if (hit) return hit;
-	}
+	const id = vehicleId.trim();
+	const direct = trains.get(id);
+	if (direct) return direct;
 
-	return undefined;
+	const segments = trainSegments(id);
+	// A GO id is `<day>_<date>_<run>_<direction>_V`. Its date fragments are
+	// not run numbers: searching every segment once matched train `26` for
+	// every train, giving them all the same section.
+	const isGoId = segments[0]?.startsWith("GO") ?? false;
+	const run = isGoId ? segments[2] : segments[0];
+	return run ? trains.get(run) : undefined;
 }
