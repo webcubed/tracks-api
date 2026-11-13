@@ -15,8 +15,9 @@ export const vehicles = new Hono();
 
 /**
  * Find a live vehicle by the id a rider types: a subway train id or run token,
- * a bus fleet number, or an LIRR train number. Feed search is citywide, so the
- * vehicle does not need to be inside the current map viewport.
+ * a bus fleet number, an LIRR train number, an LIRR car number, or an LIRR
+ * fleet class such as `M9`. Feed search is citywide, so the vehicle does not
+ * need to be inside the current viewport.
  */
 vehicles.get("/search", optionalAgency, async (c) => {
 	const query = c.req.query("q")?.trim() ?? "";

@@ -457,6 +457,27 @@ function asTrains(payload: unknown): RadarTrain[] {
 	);
 }
 
+/**
+ * Live LIRR consists, keyed by train number. The locations payload carries the
+ * cars each train is running; the countdown boards that `radarTrains` also
+ * reads are not needed for a car lookup, so this stays on the faster path.
+ */
+export const radarConsists = memoize(
+	async (): Promise<Map<string, TrainConsist>> => {
+		const locations = await getLocations("LIRR", "TRACK_TURF");
+		const consists = new Map<string, TrainConsist>();
+
+		for (const raw of asTrains(locations)) {
+			const train = (raw.train_num ?? "").trim();
+			const consist = consistOf(raw);
+			if (train && consist) consists.set(train, consist);
+		}
+
+		return consists;
+	},
+	10_000
+);
+
 function addTrain(
 	trains: Map<string, RadarTrainInfo>,
 	raw: RadarTrain,

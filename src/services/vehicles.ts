@@ -1,18 +1,29 @@
 import type { AgencyId } from "@/constants";
 import type { StopRef } from "@/services/network";
-import type { RadarTrainInfo, TrackSection } from "@/services/trackSections";
+import type {
+	RadarTrainInfo,
+	TrackSection,
+	TrainConsist,
+} from "@/services/trackSections";
 import type { FeedEntity, FeedTripUpdate } from "@/types/realtime";
 import { AGENCY_IDS, REALTIME_FEEDS } from "@/constants";
 import { memoize } from "@/lib/memoize";
 import { getStopRefs } from "@/services/network";
 import { FEED_TTL_MS, fetchRealtime, lookupTrips } from "@/services/realtime";
 import { getRoute, getRoutes } from "@/services/routes";
-import { matchRadarTrain, radarTrains } from "@/services/trackSections";
+import {
+	matchRadarTrain,
+	radarConsists,
+	radarTrains,
+	trainRun,
+} from "@/services/trackSections";
 
 export type ApiVehicle = {
 	id: string;
-	/** Rider-facing vehicle label: an LIRR train number, when the feed posts one. */
+	/** Feed label; on LIRR this is a car number, not the train number. */
 	label?: string;
+	/** LIRR train number, distinct from the car number in `label`. */
+	train?: string;
 	route: string;
 	/** Absent only if the feed gives no coordinates and no resolvable stop. */
 	location?: { lat: number; lon: number };
@@ -23,11 +34,18 @@ export type ApiVehicle = {
 	nextStopId?: string;
 	occupancy?: string;
 	/**
+	 * The rolling stock the train is made of, when the railroad reports it:
+	 * `M9`, `M7`, `M3`, or a diesel fleet name.
+	 */
+	fleet?: string;
+	/**
 	 * The track section the train is on, from the LIRR tracking system: the
 	 * last location it reached, the next ahead, and the track it uses (e.g.
 	 * `W2` in West Side Yard). Known before a position is out.
 	 */
 	section?: TrackSection;
+	/** Cars and their occupancy, when the railroad reports a consist. */
+	consist?: TrainConsist;
 	/** Where `location` came from, when it did not come from the feed itself. */
 	positionSource?: "gtfs-realtime" | "tracking-system" | "stop";
 };
@@ -248,6 +266,9 @@ export async function getVehiclesForAgency(
 		return {
 			id: entity.id ?? vehicle?.vehicle?.id ?? "",
 			...(vehicle?.vehicle?.label ? { label: vehicle.vehicle.label } : {}),
+			...(feed === "lirr"
+				? { train: radar?.train ?? trainRun(entity.id ?? "") }
+				: {}),
 			route,
 			location,
 			geometry: coordinates
@@ -258,14 +279,26 @@ export async function getVehiclesForAgency(
 			nextStop: next?.name,
 			nextStopId: next?.id,
 			occupancy: vehicle?.occupancyStatus,
+			...(radar?.consist?.fleet
+				? { fleet: radar.consist.fleet.trim().toUpperCase() }
+				: {}),
 			...(radar?.section ? { section: radar.section } : {}),
+			...(radar?.consist ? { consist: radar.consist } : {}),
 			...(positionSource ? { positionSource } : {}),
 		};
 	});
 }
 
 /** A vehicle search hit carries the feed it came from, which `route` alone cannot. */
-export type ApiVehicleSearchResult = ApiVehicle & { agency: AgencyId };
+export type ApiVehicleSearchResult = ApiVehicle & {
+	agency: AgencyId;
+	/** The LIRR car number that matched, when the query named a car. */
+	matchedCar?: number;
+	/** The LIRR train carrying that car, so the result names the train. */
+	matchedTrain?: string;
+	/** The fleet class that matched, when the query named M9, M7, M3, and so on. */
+	matchedFleet?: string;
+};
 
 type VehicleSearchHit = {
 	entity: FeedEntity;
@@ -274,6 +307,9 @@ type VehicleSearchHit = {
 	tripId: string;
 	label?: string;
 	score: number;
+	car?: number;
+	train?: string;
+	fleet?: string;
 };
 
 /** Bus routes share one citywide vehicle feed; this maps a route back to its feed. */
@@ -348,6 +384,150 @@ function vehicleSearchScore(
 	return best;
 }
 
+/** A three-to-five digit number a rider may be reading off a car. */
+function isCarNumber(value: string): boolean {
+	return (
+		value.length >= 3 &&
+		value.length <= 5 &&
+		[...value].every((character) => character >= "0" && character <= "9")
+	);
+}
+
+/**
+ * Match a typed number against the cars each live LIRR train is pulling. The
+ * result is the train carrying that car, with the car number kept so a search
+ * for 7700 can explain why it returned train 6364.
+ */
+function carSearchHits(
+	needle: string,
+	entities: FeedEntity[],
+	consists: Map<string, TrainConsist>
+): VehicleSearchHit[] {
+	const trains = new Map<
+		string,
+		{ score: number; car: number; train: string }
+	>();
+
+	for (const [train, consist] of consists) {
+		for (const car of consist.cars) {
+			if (car.number === undefined) continue;
+			const number = String(car.number);
+			const score =
+				number === needle
+					? 100
+					: number.startsWith(needle)
+						? 70
+						: number.includes(needle)
+							? 40
+							: 0;
+			if (score === 0) continue;
+			const key = train.toUpperCase();
+			const existing = trains.get(key);
+			if (!existing || score > existing.score)
+				trains.set(key, { score, car: car.number, train: key });
+		}
+	}
+
+	if (trains.size === 0) return [];
+
+	return entities.flatMap((entity): VehicleSearchHit[] => {
+		const id = entity.id ?? entity.vehicle?.vehicle?.id ?? "";
+		const publicTrain = entity.vehicle?.vehicle?.label?.trim().toUpperCase();
+		// The radar map is keyed by the run in the vehicle id, while some
+		// vehicles label themselves with a leading car number. Try the run first,
+		// then the label, so a car is never attached to a different train that
+		// happens to share a token.
+		let match: { score: number; car: number; train: string } | undefined;
+		for (const key of [trainRun(id), publicTrain, id]) {
+			if (!key) continue;
+			const candidate = trains.get(key);
+			if (candidate) {
+				match = candidate;
+				break;
+			}
+		}
+
+		if (!match) return [];
+		const tripId = entity.vehicle?.trip?.tripId;
+		if (!tripId) return [];
+
+		return [
+			{
+				entity,
+				feed: "lirr",
+				routeId: entity.vehicle?.trip?.routeId,
+				tripId,
+				label: entity.vehicle?.vehicle?.label,
+				score: match.score,
+				car: match.car,
+				train: match.train,
+			},
+		];
+	});
+}
+
+/**
+ * Match a typed fleet class (`M9`, `M7`, `M3`, diesel names) against the
+ * consist each live LIRR train reports. The result is every train currently
+ * running that equipment, not just the ones inside the map viewport.
+ */
+function fleetSearchHits(
+	needle: string,
+	entities: FeedEntity[],
+	consists: Map<string, TrainConsist>
+): VehicleSearchHit[] {
+	const trains = new Map<string, { score: number; fleet: string }>();
+
+	for (const [train, consist] of consists) {
+		const fleet = consist.fleet?.trim().toUpperCase();
+		if (!fleet) continue;
+		const score =
+			fleet === needle
+				? 100
+				: fleet.startsWith(needle)
+					? 70
+					: fleet.includes(needle)
+						? 40
+						: 0;
+		if (score === 0) continue;
+		const key = train.toUpperCase();
+		const existing = trains.get(key);
+		if (!existing || score > existing.score) trains.set(key, { score, fleet });
+	}
+
+	if (trains.size === 0) return [];
+
+	return entities.flatMap((entity): VehicleSearchHit[] => {
+		const id = entity.id ?? entity.vehicle?.vehicle?.id ?? "";
+		const publicTrain = entity.vehicle?.vehicle?.label?.trim().toUpperCase();
+		let match: { score: number; fleet: string } | undefined;
+		for (const key of [trainRun(id), publicTrain, id]) {
+			if (!key) continue;
+			const candidate = trains.get(key);
+			if (candidate) {
+				match = candidate;
+				break;
+			}
+		}
+
+		if (!match) return [];
+		const tripId = entity.vehicle?.trip?.tripId;
+		if (!tripId) return [];
+
+		return [
+			{
+				entity,
+				feed: "lirr",
+				routeId: entity.vehicle?.trip?.routeId,
+				tripId,
+				label: entity.vehicle?.vehicle?.label,
+				score: match.score,
+				fleet: match.fleet,
+			},
+		];
+	});
+}
+
 /**
  * Resolve a rider-typed vehicle id across subway, bus and LIRR. The raw feeds are
  * searched first so a vehicle outside the map viewport is still found; only the
@@ -363,30 +543,82 @@ async function findVehicles(
 	const feeds: AgencyId[] = agency
 		? [agency.startsWith("bus_") ? "bus_bx" : agency]
 		: ["subway", "bus_bx", "lirr"];
-	const raw = await Promise.all(
-		feeds.map(async (feed) => {
-			const entities = await fetchRealtime(feed, ["*"]);
-			return entities.flatMap((entity): VehicleSearchHit[] => {
-				if (!entity.vehicle) return [];
-				const score = vehicleSearchScore(entity, needle);
-				if (score === undefined) return [];
-				const tripId = entity.vehicle.trip?.tripId;
-				if (!tripId) return [];
+	const wantsLirrSearch = !agency || agency === "lirr";
+	const wantsCarSearch = isCarNumber(needle) && wantsLirrSearch;
+	// Start the consist lookup alongside the vehicle feeds: a car query should
+	// not pay for both requests end to end. Fleet queries use the same lookup.
+	const consistsPromise = wantsLirrSearch
+		? radarConsists().catch(() => undefined)
+		: Promise.resolve(undefined);
+	const feedEntities = await Promise.all(
+		feeds.map(async (feed) => ({
+			entities: await fetchRealtime(feed, ["*"]),
+			feed,
+		}))
+	);
+	const raw = feedEntities.map(({ entities, feed }) =>
+		entities.flatMap((entity): VehicleSearchHit[] => {
+			if (!entity.vehicle) return [];
+			const score = vehicleSearchScore(entity, needle);
+			if (score === undefined) return [];
+			const tripId = entity.vehicle.trip?.tripId;
+			if (!tripId) return [];
 
-				return [
-					{
-						entity,
-						feed,
-						routeId: entity.vehicle.trip?.routeId,
-						tripId,
-						label: entity.vehicle.vehicle?.label,
-						score,
-					},
-				];
-			});
+			return [
+				{
+					entity,
+					feed,
+					routeId: entity.vehicle.trip?.routeId,
+					tripId,
+					label: entity.vehicle.vehicle?.label,
+					score,
+				},
+			];
 		})
 	);
 	const hits = raw.flat().toSorted((a, b) => b.score - a.score);
+
+	// A car number can collide with a bus fleet number, so car hits join the
+	// direct hits instead of replacing them. A train already matched by its own
+	// label keeps one row and gains the car it carries.
+	const lirrEntities = feedEntities.find(
+		({ feed }) => feed === "lirr"
+	)?.entities;
+	if (wantsCarSearch && lirrEntities?.length) {
+		const consists = await consistsPromise;
+		if (consists) {
+			for (const carHit of carSearchHits(needle, lirrEntities, consists)) {
+				const existing = hits.find((hit) => hit.entity === carHit.entity);
+				if (existing) {
+					existing.car ??= carHit.car;
+					existing.train ??= carHit.train;
+					existing.score = Math.max(existing.score, carHit.score);
+				} else {
+					hits.push(carHit);
+				}
+			}
+
+			hits.sort((a, b) => b.score - a.score);
+		}
+	}
+
+	// Fleet classes are searchable too: `M9` returns the M9 trains in service.
+	// This is LIRR-only because the subway and bus feeds do not publish a car
+	// class for an individual train; guessing one from a route would be wrong.
+	if (wantsLirrSearch && !wantsCarSearch && lirrEntities?.length) {
+		const consists = await consistsPromise;
+		if (consists) {
+			const fleetHits = fleetSearchHits(needle, lirrEntities, consists);
+			// A fleet class is exact information. When it lands, do not pad the
+			// result with buses whose route or trip id merely contains `M9`, such
+			// as the M96: the reader asked for equipment, not a route substring.
+			if (fleetHits.length > 0) {
+				hits.length = 0;
+				hits.push(...fleetHits);
+			}
+		}
+	}
+
 	if (hits.length === 0) return [];
 
 	const lirrTripIds = [
@@ -458,6 +690,9 @@ async function findVehicles(
 		seen.add(key);
 		results.push({
 			...vehicle,
+			...(hit.car === undefined ? {} : { matchedCar: hit.car }),
+			...(hit.train === undefined ? {} : { matchedTrain: hit.train }),
+			...(hit.fleet === undefined ? {} : { matchedFleet: hit.fleet }),
 			...(vehicle.label
 				? {}
 				: hit.label
