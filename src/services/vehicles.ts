@@ -212,9 +212,33 @@ export async function getVehiclesForAgency(
 				)
 			: undefined,
 	}));
+	// A train can appear under more than one realtime entity while it turns at
+	// a terminal. Its run number is the identity that survives the trip change.
+	const unique = new Map<string, TrackedVehicle>();
+	for (const item of tracked) {
+		const id = item.entity.id ?? item.entity.vehicle?.vehicle?.id ?? "";
+		const key =
+			feed === "lirr" ? (item.radar?.train ?? trainRun(id) ?? id) : id;
+
+		const existing = unique.get(key);
+
+		if (!existing) {
+			unique.set(key, item);
+			continue;
+		}
+
+		unique.set(key, {
+			...existing,
+			nextStop: existing.nextStop ?? item.nextStop,
+			radar: existing.radar?.section ? existing.radar : item.radar,
+		});
+	}
+
+	const live = [...unique.values()];
+
 	const currentStopIds = [
 		...new Set(
-			tracked.flatMap(({ entity }) => {
+			live.flatMap(({ entity }) => {
 				const { vehicle } = entity;
 				const position = vehicle?.position;
 				return vehicle?.stopId &&
@@ -225,7 +249,7 @@ export async function getVehiclesForAgency(
 		),
 	];
 	const currentRefs = await stopRefs(feed, currentStopIds);
-	const visible = tracked.filter(({ entity, radar }) => {
+	const visible = live.filter(({ entity, radar }) => {
 		if (!bounds) return true;
 		const position = entity.vehicle?.position;
 		if (position?.latitude !== undefined && position.longitude !== undefined)
