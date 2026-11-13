@@ -24,6 +24,7 @@ type CountdownStop = {
 	stop_status?: string;
 	stop_type?: string;
 	sign_track?: string;
+	t2s_track?: string;
 	posted?: boolean;
 	local_cancel?: boolean;
 };
@@ -45,6 +46,8 @@ export type Departure = {
 	time: number;
 	/** Posted track; absent until the tracking system assigns one. */
 	track?: string;
+	/** The section track designation, e.g. `R5`, when the countdown feed has it. */
+	sectionTrack?: string;
 	/** `E` eastbound or `W` westbound. */
 	direction: string;
 	/** Name of the last station the train serves. */
@@ -160,6 +163,7 @@ function toCountdownDeparture(
 		.map((item) => (item.code ?? "").trim().toUpperCase())
 		.filter(Boolean);
 	const track = current.sign_track?.trim();
+	const sectionTrack = current.t2s_track?.trim();
 	const lastCode = remainingCodes.at(-1);
 	const destination =
 		train.details?.headsign ?? (lastCode ? name(lastCode) : undefined);
@@ -168,6 +172,7 @@ function toCountdownDeparture(
 		train: train.train_num,
 		time,
 		...(track ? { track } : {}),
+		...(sectionTrack ? { sectionTrack } : {}),
 		direction: train.details?.direction ?? "",
 		...(destination ? { destination } : {}),
 		stops: remainingCodes.map((stationCode) => name(stationCode)),
@@ -198,6 +203,49 @@ function parseCountdownDepartures(
 }
 
 /**
+ * Terminal boards list an arriving train as a departure to the station it is
+ * already standing at, with no stops left. Those rows look like a second copy
+ * of the train and never leave, so drop them; collapse any remaining repeat of
+ * one train number to its next departure.
+ */
+function dedupeDepartures(
+	departures: Departure[],
+	stopName: string
+): Departure[] {
+	const byTrain = new Map<string, Departure>();
+
+	for (const departure of departures) {
+		if (
+			departure.stops.length === 0 &&
+			departure.destination?.trim() === stopName.trim()
+		)
+			continue;
+
+		const existing = byTrain.get(departure.train);
+		if (!existing) {
+			byTrain.set(departure.train, departure);
+			continue;
+		}
+
+		const [keep, other] =
+			departure.time < existing.time
+				? [departure, existing]
+				: [existing, departure];
+		byTrain.set(departure.train, {
+			...keep,
+			...(keep.track ? {} : other.track ? { track: other.track } : {}),
+			...(keep.sectionTrack
+				? {}
+				: other.sectionTrack
+					? { sectionTrack: other.sectionTrack }
+					: {}),
+		});
+	}
+
+	return [...byTrain.values()].toSorted((a, b) => a.time - b.time);
+}
+
+/**
  * The departure board for a stop, with track assignments from the MTA's LIRR
  * tracking system. Terminal hubs publish a dedicated Solari board; branch
  * stations without a physical Solari board fall back to the station countdown
@@ -224,7 +272,10 @@ export async function getDepartures(
 			stop,
 			code,
 			source: "mta-radar-solari",
-			departures: parseSolariDepartures(raw, names),
+			departures: dedupeDepartures(
+				parseSolariDepartures(raw, names),
+				stop.name
+			),
 		};
 	} catch {
 		// Solari only covers major terminal boards (NYK, GCT, JAM, ATL); try
@@ -237,7 +288,10 @@ export async function getDepartures(
 			stop,
 			code,
 			source: "mta-radar-countdown",
-			departures: parseCountdownDepartures(raw, code, names),
+			departures: dedupeDepartures(
+				parseCountdownDepartures(raw, code, names),
+				stop.name
+			),
 		};
 	} catch (error) {
 		return {
