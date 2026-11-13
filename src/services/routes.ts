@@ -13,6 +13,10 @@ import { runQuery } from "@/lib/parquet";
  */
 const SPAN_SLACK = 0.05;
 
+/** Approximate metres per degree in New York, for small segment comparisons. */
+const METERS_PER_DEGREE_LON = 84_200;
+const METERS_PER_DEGREE_LAT = 111_320;
+
 export type ApiRoute = {
 	id: string;
 	agency: string;
@@ -39,6 +43,63 @@ type TripIndex = {
 	/** `route_id` → fullest polyline the route runs. */
 	shapes: Map<string, Array<[number, number]>>;
 };
+
+function segmentMeters(from: [number, number], to: [number, number]): number {
+	return Math.hypot(
+		(to[0] - from[0]) * METERS_PER_DEGREE_LON,
+		(to[1] - from[1]) * METERS_PER_DEGREE_LAT
+	);
+}
+
+/**
+ * GTFS shapes occasionally contain a single stray point that jumps away from
+ * the alignment and immediately back, which draws a hairpin at street zoom.
+ * Drop only short, near-180-degree detours; a real terminal reversal continues
+ * away from the previous point instead of returning beside it.
+ */
+function cleanShape(points: Array<[number, number]>): Array<[number, number]> {
+	const cleaned: Array<[number, number]> = [];
+	for (const point of points) {
+		const previous = cleaned.at(-1);
+		if (previous?.[0] === point[0] && previous?.[1] === point[1]) continue;
+		cleaned.push(point);
+	}
+
+	let changed = true;
+	while (changed) {
+		changed = false;
+		let spike = -1;
+		for (let index = 1; index < cleaned.length - 1; index += 1) {
+			const previous = cleaned[index - 1];
+			const point = cleaned[index];
+			const next = cleaned[index + 1];
+			const inbound = [point[0] - previous[0], point[1] - previous[1]] as const;
+			const outbound = [next[0] - point[0], next[1] - point[1]] as const;
+			const inboundX = inbound[0] * METERS_PER_DEGREE_LON;
+			const inboundY = inbound[1] * METERS_PER_DEGREE_LAT;
+			const outboundX = outbound[0] * METERS_PER_DEGREE_LON;
+			const outboundY = outbound[1] * METERS_PER_DEGREE_LAT;
+			const inboundMeters = Math.hypot(inboundX, inboundY);
+			const outboundMeters = Math.hypot(outboundX, outboundY);
+			const returnGap = segmentMeters(previous, next);
+			if (inboundMeters === 0 || outboundMeters === 0) continue;
+			const dot =
+				(inboundX * outboundX + inboundY * outboundY) /
+				(inboundMeters * outboundMeters);
+			if (dot > -0.85 || returnGap > 150) continue;
+			// Keep the last candidate. In a two-point zigzag the return point is
+			// the later one, and removing it leaves the through alignment intact.
+			spike = index;
+		}
+
+		if (spike > 0) {
+			cleaned.splice(spike, 1);
+			changed = true;
+		}
+	}
+
+	return cleaned;
+}
 
 /**
  * Per feed: which routes have trips, plus one representative polyline each
@@ -138,6 +199,9 @@ const tripIndex = memoize(async (agency: AgencyId) => {
 
 		points.push([row.lon, row.lat]);
 	}
+
+	for (const [routeId, points] of shapes)
+		shapes.set(routeId, cleanShape(points));
 
 	return { routes, shapes };
 });
