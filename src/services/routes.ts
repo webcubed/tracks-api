@@ -1,9 +1,11 @@
 import type { AgencyId } from "@/constants";
 import type { Routes } from "@/types/static";
+import type { RouteBranch, RouteVariant } from "./routeBranches";
 import { AGENCIES, getStaticFeedUrl } from "@/constants";
 import { loadTable } from "@/lib/loadTable";
 import { memoize } from "@/lib/memoize";
 import { runQuery } from "@/lib/parquet";
+import { findRouteBranches } from "./routeBranches";
 
 /**
  * How much of a route's widest extent a shape may be missing and still count
@@ -17,6 +19,9 @@ const SPAN_SLACK = 0.05;
 const METERS_PER_DEGREE_LON = 84_200;
 const METERS_PER_DEGREE_LAT = 111_320;
 
+/** Regular branches; GTFS also carries short-lived reroutes for other routes. */
+const BRANCHED_SUBWAY_ROUTES = new Set(["A"]);
+
 export type ApiRoute = {
 	id: string;
 	agency: string;
@@ -26,6 +31,8 @@ export type ApiRoute = {
 	color: string;
 	textColor: string;
 	shape?: GeoJsonLineString;
+	/** Alignments the representative shape does not cover. */
+	branches?: GeoJsonLineString[];
 };
 
 /** GeoJSON: coordinates are `[lon, lat]`. */
@@ -36,12 +43,21 @@ export type GeoJsonLineString = {
 
 // DuckDB returns SQL NULL for routes with no geometry; `typeof` guards below.
 type TripRow = { route_id: string; lon?: number; lat?: number };
+type ShapeRow = {
+	route_id: string;
+	shape_id: string;
+	trips: number;
+	lon?: number;
+	lat?: number;
+};
 
 type TripIndex = {
 	/** Routes this feed actually runs. */
 	routes: Set<string>;
 	/** `route_id` → fullest polyline the route runs. */
 	shapes: Map<string, Array<[number, number]>>;
+	/** `route_id` → alignments outside the representative shape. */
+	branches: Map<string, RouteBranch[]>;
 };
 
 function segmentMeters(from: [number, number], to: [number, number]): number {
@@ -203,13 +219,58 @@ const tripIndex = memoize(async (agency: AgencyId) => {
 	for (const [routeId, points] of shapes)
 		shapes.set(routeId, cleanShape(points));
 
-	return { routes, shapes };
+	const branches = new Map<string, RouteBranch[]>();
+	if (agency === "subway") {
+		const shapeRows = await runQuery<ShapeRow>(
+			`SELECT t.route_id, s.shape_id, t.trips,
+				CAST(s.shape_pt_lon AS DOUBLE) AS lon, CAST(s.shape_pt_lat AS DOUBLE) AS lat
+			FROM (SELECT route_id, shape_id, count(*) AS trips
+				FROM read_parquet('${tripsUrl}') GROUP BY route_id, shape_id) t
+			JOIN read_parquet('${shapesUrl}') s ON s.shape_id = t.shape_id
+			ORDER BY t.route_id, s.shape_id, CAST(s.shape_pt_sequence AS INTEGER)`
+		);
+		const variants = new Map<string, Map<string, RouteVariant>>();
+
+		for (const row of shapeRows) {
+			if (typeof row.lon !== "number" || typeof row.lat !== "number") continue;
+			let routeShapes = variants.get(row.route_id);
+
+			if (!routeShapes) {
+				routeShapes = new Map();
+				variants.set(row.route_id, routeShapes);
+			}
+
+			let variant = routeShapes.get(row.shape_id);
+
+			if (!variant) {
+				variant = { points: [], trips: row.trips };
+				routeShapes.set(row.shape_id, variant);
+			}
+
+			variant.points.push([row.lon, row.lat]);
+		}
+
+		for (const [routeId, routeShapes] of variants) {
+			if (!BRANCHED_SUBWAY_ROUTES.has(routeId)) continue;
+			const representative = shapes.get(routeId);
+			if (!representative) continue;
+			const cleaned = [...routeShapes.values()].map((variant) => ({
+				points: cleanShape(variant.points),
+				trips: variant.trips,
+			}));
+			const found = findRouteBranches(representative, cleaned);
+			if (found.length > 0) branches.set(routeId, found);
+		}
+	}
+
+	return { routes, shapes, branches };
 });
 
 function toApi(
 	agency: AgencyId,
 	row: Routes,
-	points?: Array<[number, number]>
+	points?: Array<[number, number]>,
+	branches?: RouteBranch[]
 ): ApiRoute {
 	return {
 		id: row.route_id,
@@ -220,6 +281,14 @@ function toApi(
 		color: hex(row.route_color),
 		textColor: hex(row.route_text_color),
 		shape: points ? { type: "LineString", coordinates: points } : undefined,
+		...(branches?.length
+			? {
+					branches: branches.map((coordinates) => ({
+						type: "LineString" as const,
+						coordinates,
+					})),
+				}
+			: {}),
 	};
 }
 
@@ -237,7 +306,15 @@ const routeIndex = memoize(async (agency: AgencyId) => {
 	for (const row of rows) {
 		if (!trips.routes.has(row.route_id)) continue;
 
-		index.set(row.route_id, toApi(agency, row, trips.shapes.get(row.route_id)));
+		index.set(
+			row.route_id,
+			toApi(
+				agency,
+				row,
+				trips.shapes.get(row.route_id),
+				trips.branches.get(row.route_id)
+			)
+		);
 	}
 
 	return index;

@@ -1,6 +1,6 @@
 # Routes
 
-List routes operating in a feed or retrieve one route by its ID. Routes include official colors and a GeoJSON `shape` when geometry is available. The route response's `type` field is a mode string such as `subway`, `rail`, or `bus` (not a numeric GTFS route-type code).
+List routes operating in a feed or retrieve one route by its ID. Routes include official colors and a GeoJSON `shape` when geometry is available. A branched service also carries `branches`, the off-trunk alignments its single representative shape does not cover. The route response's `type` field is a mode string such as `subway`, `rail`, or `bus` (not a numeric GTFS route-type code).
 
 ## Endpoints
 
@@ -22,7 +22,7 @@ Each success returns `{ "data": ... }`. An invalid agency returns `404` with `AG
 
 ## Response shape
 
-`GET /v1/routes` returns an array; `GET /v1/routes/:id` returns one route. A route without available shape geometry omits `shape`.
+`GET /v1/routes` returns an array; `GET /v1/routes/:id` returns one route. A route without available shape geometry omits `shape`. `branches` is omitted when the representative shape already covers the whole route. Branch geometry is currently returned for the A; other routes keep the single representative shape.
 
 ```json
 {
