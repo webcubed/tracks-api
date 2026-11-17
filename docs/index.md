@@ -23,6 +23,7 @@ All successful responses use `{ "data": ... }`; failures use `{ "error": { "code
 - [Arrivals](/arrivals) — realtime arrivals by stop.
 - [Vehicles](/vehicles) — realtime vehicle locations by route.
 - [Alerts](/alerts) — active service alerts.
+- [History and analytics](/analytics): car history, delay reliability, and timetable frequency from the archive.
 - [Fares](/fares) — fare reference by agency.
 - [Journey planning](/journey) — static timetable itinerary planning.
 - [Errors](/errors) — error envelope and codes.

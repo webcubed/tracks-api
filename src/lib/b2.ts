@@ -168,48 +168,105 @@ export async function putObject(
 	body: Uint8Array,
 	contentType = "application/octet-stream"
 ): Promise<void> {
-	const config = b2Config();
-	if (!config) {
-		throw new B2Error(
-			500,
-			"ARCHIVE_NOT_CONFIGURED",
-			`archive credentials missing: ${missingB2Env().join(", ")}`
-		);
-	}
-
+	const config = requireConfig();
 	const request = sign(config, { method: "PUT", key, body });
-	const response = await fetch(request.url, {
-		method: "PUT",
-		headers: { ...request.headers, "Content-Type": contentType },
-		// Node accepts a Uint8Array body; the DOM signature only admits the
-		// ArrayBuffer-backed generic.
-		// eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
-		body: body as unknown as BodyInit,
-		signal: AbortSignal.timeout(60_000),
-	});
 
-	if (!response.ok) throw await failure(response, key);
+	await retrying(key, async () =>
+		fetch(request.url, {
+			method: "PUT",
+			headers: { ...request.headers, "Content-Type": contentType },
+			// Node accepts a Uint8Array body; the DOM signature only admits the
+			// ArrayBuffer-backed generic.
+			// eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+			body: body as unknown as BodyInit,
+			signal: AbortSignal.timeout(60_000),
+		})
+	);
 }
 
 export async function getObject(key: string): Promise<Uint8Array> {
-	const config = b2Config();
-	if (!config) {
-		throw new B2Error(
-			500,
-			"ARCHIVE_NOT_CONFIGURED",
-			`archive credentials missing: ${missingB2Env().join(", ")}`
-		);
-	}
-
+	const config = requireConfig();
 	const request = sign(config, { method: "GET", key });
-	const response = await fetch(request.url, {
-		headers: request.headers,
-		signal: AbortSignal.timeout(120_000),
-	});
+	const response = await retrying(key, async () =>
+		fetch(request.url, {
+			headers: request.headers,
+			signal: AbortSignal.timeout(120_000),
+		})
+	);
 
 	if (!response.ok) throw await failure(response, key);
 
 	return new Uint8Array(await response.arrayBuffer());
+}
+
+function requireConfig(): B2Config {
+	const config = b2Config();
+	if (!config) {
+		throw new B2Error(
+			500,
+			"ARCHIVE_NOT_CONFIGURED",
+			`archive credentials missing: ${missingB2Env().join(", ")}`
+		);
+	}
+
+	return config;
+}
+
+/**
+ * B2 answers `500 InternalError` under ordinary load, and a flush that fails
+ * has to keep its rows for the next one. Idempotent writes get three tries
+ * with backoff; a real client error is raised on the first response.
+ */
+const RETRYABLE = new Set([429, 500, 502, 503, 504]);
+
+async function wait(ms: number): Promise<void> {
+	await new Promise((resolve) => {
+		setTimeout(resolve, ms);
+	});
+}
+
+async function retrying(
+	key: string,
+	send: () => Promise<Response>
+): Promise<Response> {
+	let lastError: unknown;
+
+	for (let attempt = 1; attempt <= 3; attempt += 1) {
+		try {
+			// eslint-disable-next-line no-await-in-loop -- retries are sequential
+			const response = await send();
+			if (response.ok) return response;
+
+			// eslint-disable-next-line no-await-in-loop -- one failure read per attempt
+			const error = await failure(response, key);
+			if (!RETRYABLE.has(error.status)) throw error;
+			lastError = error;
+		} catch (error) {
+			if (error instanceof B2Error && !RETRYABLE.has(error.status)) throw error;
+			lastError = error;
+		}
+
+		// eslint-disable-next-line no-await-in-loop -- backoff between attempts
+		await wait(300 * 2 ** (attempt - 1));
+	}
+
+	throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+/** Remove one object. A key that is already gone is not an error. */
+export async function deleteObject(key: string): Promise<void> {
+	const config = requireConfig();
+
+	const request = sign(config, { method: "DELETE", key });
+	await retrying(key, async () => {
+		const response = await fetch(request.url, {
+			method: "DELETE",
+			headers: request.headers,
+			signal: AbortSignal.timeout(30_000),
+		});
+
+		return response.status === 404 ? Response.json({}) : response;
+	});
 }
 
 export type B2Object = { key: string; size: number };
@@ -229,14 +286,7 @@ function decodeXml(value: string): string {
  * never rewritten.
  */
 export async function listObjects(prefix: string): Promise<B2Object[]> {
-	const config = b2Config();
-	if (!config) {
-		throw new B2Error(
-			500,
-			"ARCHIVE_NOT_CONFIGURED",
-			`archive credentials missing: ${missingB2Env().join(", ")}`
-		);
-	}
+	const config = requireConfig();
 
 	const objects: B2Object[] = [];
 	let continuation: string | undefined;

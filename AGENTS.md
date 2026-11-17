@@ -31,6 +31,7 @@ These fallbacks are undocumented, unstable production APIs. GTFS first, fallback
 pnpm dev                 # tsx watch, needs .env (missing is fine — nothing reads it)
 pnpm exec tsx src/index.ts   # no watch; server on :3000
 pnpm mcp                 # stdio MCP server (mcp/server.ts), proxies TRACKS_API_URL
+pnpm record              # archive recorder: samples the feeds, flushes parquet to B2 (needs .env)
 pnpm lint                # xo (see "Lint" below)
 pnpm exec tsc --noEmit   # typecheck — run with lint, always
 pnpm exec prettier --write <files>
@@ -63,6 +64,8 @@ src/
 │   ├── memoize.ts        # memoize(fn, ttl?) + clearMemoized() for the hourly refresh
 │   ├── geo.ts            # distanceMeters (haversine)
 │   └── time.ts           # clockSeconds/clockOf, today, isValidDate
+├── archive/              # history in object storage: b2 SigV4 client, parquet writer,
+│                         # immutable parts per flush, the recorder's capture + dedupe
 ├── services/             # one file per endpoint group; type + toApi + id index
 │   ├── network.ts        # the per-feed indexes: stopIndex, directionIndex, transferIndex
 │   ├── schedule.ts       # getSchedule + activeServices (shared with journey)
@@ -150,6 +153,13 @@ Phase 3:
 - [x] `GET /v1/journey?from=&to=&date=&time=` (schedule-based, 2 legs max)
 - [x] `GET /v1/fares?agency=` (curated; no GTFS fare data exists)
 - [x] Hourly static refresh (`setInterval` in `src/index.ts`), 15s realtime TTL cache
+
+Archive:
+
+- [x] `scripts/record.ts` + `ArchiveBuffer`: LIRR fleet samples and deduped arrival delays to B2 parquet parts
+- [x] `GET /v1/analytics/coverage`, `/fleet?car=`, `/reliability`, `/stops/:id`, `/frequency`
+- [x] Archive reads on their own DuckDB connection (live `runQuery` serializes; a 24h scan would queue in front of live requests)
+- [x] Docs: `docs/analytics.md`; measured 24h cost: 94 parts, 1.6 s cold, ~0.1 s scan warm
 
 ## Git
 

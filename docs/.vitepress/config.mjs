@@ -23,6 +23,7 @@ export default defineConfig({
 					{ text: "Arrivals", link: "/arrivals" },
 					{ text: "Vehicles", link: "/vehicles" },
 					{ text: "Alerts", link: "/alerts" },
+					{ text: "History and analytics", link: "/analytics" },
 					{ text: "Fares", link: "/fares" },
 					{ text: "Journey planning", link: "/journey" },
 					{ text: "Errors", link: "/errors" },

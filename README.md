@@ -74,6 +74,19 @@ curl -s "localhost:3000/v1/arrivals?stop=237&agency=lirr"
 
 First boot downloads every static table plus shape geometry (~13 seconds); the tables are held in memory and refreshed hourly. `stop_times` (millions of rows) is queried per request against the remote Parquet files.
 
+## History and analytics
+
+Live data is cached for fifteen seconds and then gone. `/v1/analytics` reads a parquet archive in object storage instead: where one LIRR car has been (`/fleet?car=`), how late service actually runs (`/reliability`, `/stops/:id`), and how often it comes (`/frequency`, read from the timetable for any date).
+
+Recording is a separate process, because the API sleeps on free hosting:
+
+```sh
+pnpm record          # sample the feeds, flush parquet parts to the bucket
+pnpm record --probe  # what the bucket holds
+```
+
+It needs `B2_ENDPOINT`, `B2_REGION`, `B2_KEY_ID`, `B2_APP_KEY` and `B2_BUCKET` in `.env`; without them the archive routes answer `503 ARCHIVE_NOT_CONFIGURED` and everything else works. See [docs/analytics.md](docs/analytics.md) for the layout, response shapes, and measured cost of a 24-hour window.
+
 ## Data sources
 
 - **Static GTFS** ([MTA S3 zips](https://rrgtfsfeeds.s3.amazonaws.com/gtfs_subway.zip)): converted to Parquet with `scripts/convert.ts` and published as release assets at `https://github.com/webcubed/tracks-api/releases/download/latest-gtfs/{agency}_{table}.parquet`. The server reads those over DuckDB's `httpfs`.
