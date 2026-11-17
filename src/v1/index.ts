@@ -2,6 +2,7 @@ import { FeedError } from "@/services/realtime";
 import { Hono } from "hono";
 import { agencies } from "./routes/agencies";
 import { alerts } from "./routes/alerts";
+import { analytics } from "./routes/analytics";
 import { arrivals } from "./routes/arrivals";
 import { fares } from "./routes/fares";
 import { journey } from "./routes/journey";
@@ -18,6 +19,7 @@ v1.route("/vehicles", vehicles);
 v1.route("/alerts", alerts);
 v1.route("/fares", fares);
 v1.route("/journey", journey);
+v1.route("/analytics", analytics);
 
 /** A dead real-time upstream is 502; anything else is a bug. The envelope
  * stays intact either way. */

@@ -18,6 +18,7 @@
 		"lint": "xo .",
 		"lint:fix": "xo --fix",
 		"mcp": "tsx mcp/server.ts",
+		"record": "tsx --env-file=.env scripts/record.ts",
 		"start": "node scripts/ensure-docs.mjs && MALLOC_ARENA_MAX=2 node --max-old-space-size=256 --import tsx src/index.ts"
 	},
 	"dependencies": {
