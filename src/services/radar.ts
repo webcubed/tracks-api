@@ -26,9 +26,13 @@ function isStationCodeCharacter(character: string): boolean {
 }
 
 export class RadarUnavailableError extends Error {
-	constructor(message: string) {
+	/** HTTP status when the tracking host answered; absent for network errors. */
+	readonly status?: number;
+
+	constructor(message: string, status?: number) {
 		super(message);
 		this.name = "RadarUnavailableError";
+		this.status = status;
 	}
 }
 
@@ -53,7 +57,8 @@ const fetchSolari = memoize(async (code: string): Promise<unknown> => {
 
 	if (response.status >= 300) {
 		throw new RadarUnavailableError(
-			`tracking system responded ${response.status}`
+			`tracking system responded ${response.status}`,
+			response.status
 		);
 	}
 

@@ -1,7 +1,12 @@
 import type { AgencyId } from "@/constants";
 import type { Stops } from "@/types/static";
 import { resolveStop } from "@/services/network";
-import { getCountdown, getSolari, isStationCode } from "@/services/radar";
+import {
+	getCountdown,
+	getSolari,
+	isStationCode,
+	RadarUnavailableError,
+} from "@/services/radar";
 import { stationNameFor, stationNames } from "@/services/stationCodes";
 
 /** One train as the Solari board reports it. */
@@ -71,6 +76,13 @@ export type DepartureBoard = {
 function codeOf(row: Stops): string {
 	return (row.stop_code ?? "").trim().toUpperCase();
 }
+
+/**
+ * Solari only serves terminal boards, so a 404 from another station is a
+ * stable answer. Cache it briefly; transient failures stay retryable.
+ */
+const SOLARI_MISS_TTL_MS = 10 * 60_000;
+const solariMisses = new Map<string, number>();
 
 function isPassengerStop(stopType: string | undefined): boolean {
 	return (
@@ -265,21 +277,30 @@ export async function getDepartures(
 		return { stop, departures: [] };
 
 	const names = await stationNames(agency);
+	const now = Date.now();
+	const missedAt = solariMisses.get(code);
 
-	try {
-		const raw = await getSolari(code);
-		return {
-			stop,
-			code,
-			source: "mta-radar-solari",
-			departures: dedupeDepartures(
-				parseSolariDepartures(raw, names),
-				stop.name
-			),
-		};
-	} catch {
-		// Solari only covers major terminal boards (NYK, GCT, JAM, ATL); try
-		// the station countdown endpoint before reporting an error.
+	if (missedAt === undefined || now - missedAt >= SOLARI_MISS_TTL_MS) {
+		try {
+			const raw = await getSolari(code);
+			solariMisses.delete(code);
+			return {
+				stop,
+				code,
+				source: "mta-radar-solari",
+				departures: dedupeDepartures(
+					parseSolariDepartures(raw, names),
+					stop.name
+				),
+			};
+		} catch (error) {
+			// Solari only covers major terminal boards (NYK, GCT, JAM, ATL); try
+			// the station countdown endpoint before reporting an error. A 404 is
+			// the station not having a board, so remember it; network and server
+			// failures stay retryable.
+			if (error instanceof RadarUnavailableError && error.status === 404)
+				solariMisses.set(code, now);
+		}
 	}
 
 	try {

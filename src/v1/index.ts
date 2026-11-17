@@ -4,7 +4,6 @@ import { agencies } from "./routes/agencies";
 import { alerts } from "./routes/alerts";
 import { arrivals } from "./routes/arrivals";
 import { fares } from "./routes/fares";
-import { fleet } from "./routes/fleet";
 import { journey } from "./routes/journey";
 import { routes } from "./routes/routes";
 import { stops } from "./routes/stops";
@@ -18,7 +17,6 @@ v1.route("/arrivals", arrivals);
 v1.route("/vehicles", vehicles);
 v1.route("/alerts", alerts);
 v1.route("/fares", fares);
-v1.route("/fleet", fleet);
 v1.route("/journey", journey);
 
 /** A dead real-time upstream is 502; anything else is a bug. The envelope

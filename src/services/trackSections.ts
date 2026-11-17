@@ -422,6 +422,27 @@ function sectionOf(
  */
 const SECTION_HUBS = ["NYK", "GCT"];
 
+/** Locations parsed once per refresh; vehicles and car search share the result. */
+const radarLocationIndex = memoize(
+	async (): Promise<{
+		trains: RadarTrain[];
+		consists: Map<string, TrainConsist>;
+	}> => {
+		const locations = await getLocations("LIRR", "TRACK_TURF");
+		const trains = asTrains(locations);
+		const consists = new Map<string, TrainConsist>();
+
+		for (const raw of trains) {
+			const train = (raw.train_num ?? "").trim();
+			const consist = consistOf(raw);
+			if (train && consist) consists.set(train, consist);
+		}
+
+		return { trains, consists };
+	},
+	10_000
+);
+
 /**
  * Every live train the tracking system reports, keyed by advertised train
  * number, with its current track section. Refreshed on the tracking host's own
@@ -430,8 +451,8 @@ const SECTION_HUBS = ["NYK", "GCT"];
 export const radarTrains = memoize(
 	async (): Promise<Map<string, RadarTrainInfo>> => {
 		const names = await stationNames("lirr");
-		const [locations, ...boards] = await Promise.all([
-			getLocations("LIRR", "TRACK_TURF").catch(() => undefined),
+		const [{ trains: rawTrains, consists }, ...boards] = await Promise.all([
+			radarLocationIndex(),
 			...SECTION_HUBS.map(async (code) =>
 				getCountdown(code, { includePassed: true, hours: 3 }).catch(
 					() => undefined
@@ -440,11 +461,12 @@ export const radarTrains = memoize(
 		]);
 
 		const trains = new Map<string, RadarTrainInfo>();
-		for (const raw of asTrains(locations)) addTrain(trains, raw, false, names);
+		const context = { names, consists };
+		for (const raw of rawTrains) addTrain(trains, raw, false, context);
 		// Board events carry the yard and interlocking designations the
 		// locations stop lists omit, so they win where the two disagree.
 		for (const board of boards)
-			for (const raw of asTrains(board)) addTrain(trains, raw, true, names);
+			for (const raw of asTrains(board)) addTrain(trains, raw, true, { names });
 
 		return trains;
 	},
@@ -464,30 +486,32 @@ function asTrains(payload: unknown): RadarTrain[] {
  */
 export const radarConsists = memoize(
 	async (): Promise<Map<string, TrainConsist>> => {
-		const locations = await getLocations("LIRR", "TRACK_TURF");
-		const consists = new Map<string, TrainConsist>();
+		const index = await radarLocationIndex();
 
-		for (const raw of asTrains(locations)) {
-			const train = (raw.train_num ?? "").trim();
-			const consist = consistOf(raw);
-			if (train && consist) consists.set(train, consist);
-		}
-
-		return consists;
+		return index.consists;
 	},
 	10_000
 );
+
+type RadarContext = {
+	names: Map<string, string>;
+	/** Parsed locations consists; absent for a board payload. */
+	consists?: Map<string, TrainConsist>;
+};
 
 function addTrain(
 	trains: Map<string, RadarTrainInfo>,
 	raw: RadarTrain,
 	fromBoard: boolean,
-	names: Map<string, string>
+	context: RadarContext
 ): void {
 	const train = (raw.train_num ?? "").trim();
 	if (!train) return;
 
-	const incoming = infoOf(raw, fromBoard, names);
+	const consist = context.consists
+		? context.consists.get(train)
+		: consistOf(raw);
+	const incoming = infoOf(raw, fromBoard, context.names, consist);
 	const existing = trains.get(train);
 	if (!existing) {
 		trains.set(train, incoming);
@@ -512,7 +536,8 @@ function addTrain(
 function infoOf(
 	train: RadarTrain,
 	fromBoard: boolean,
-	names: Map<string, string>
+	names: Map<string, string>,
+	consist: TrainConsist | undefined
 ): RadarTrainInfo {
 	const location =
 		train.location?.latitude !== undefined &&
@@ -532,7 +557,6 @@ function infoOf(
 	const section = fromBoard
 		? (sectionFromEvents(eventsOf(train, names)) ?? sectionOf(train, names))
 		: sectionOf(train, names);
-	const consist = consistOf(train);
 
 	return {
 		train: (train.train_num ?? "").trim() || undefined,

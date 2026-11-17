@@ -417,6 +417,31 @@ function isCarNumber(value: string): boolean {
 	);
 }
 
+/** A fleet class the LIRR publishes: M9, M7, C3, DE30AC, DM30AC. */
+function isFleetClass(value: string): boolean {
+	let letters = 0;
+	let digits = 0;
+	let trailingLetters = 0;
+
+	for (const character of value) {
+		if (character >= "A" && character <= "Z") {
+			if (digits === 0) letters += 1;
+			else trailingLetters += 1;
+		} else if (character >= "0" && character <= "9") {
+			if (trailingLetters > 0) return false;
+			digits += 1;
+		} else return false;
+	}
+
+	return (
+		letters >= 1 &&
+		letters <= 3 &&
+		digits >= 1 &&
+		digits <= 3 &&
+		trailingLetters <= 2
+	);
+}
+
 /**
  * Match a typed number against the cars each live LIRR train is pulling. The
  * result is the train carrying that car, with the car number kept so a search
@@ -569,11 +594,13 @@ async function findVehicles(
 		: ["subway", "bus_bx", "lirr"];
 	const wantsLirrSearch = !agency || agency === "lirr";
 	const wantsCarSearch = isCarNumber(needle) && wantsLirrSearch;
-	// Start the consist lookup alongside the vehicle feeds: a car query should
-	// not pay for both requests end to end. Fleet queries use the same lookup.
-	const consistsPromise = wantsLirrSearch
-		? radarConsists().catch(() => undefined)
-		: Promise.resolve(undefined);
+	const wantsFleetSearch =
+		wantsLirrSearch && !wantsCarSearch && isFleetClass(needle);
+	// Only car and fleet queries need the consist lookup; start it alongside the feeds.
+	const consistsPromise =
+		wantsCarSearch || wantsFleetSearch
+			? radarConsists().catch(() => undefined)
+			: Promise.resolve(undefined);
 	const feedEntities = await Promise.all(
 		feeds.map(async (feed) => ({
 			entities: await fetchRealtime(feed, ["*"]),
@@ -602,9 +629,8 @@ async function findVehicles(
 	);
 	const hits = raw.flat().toSorted((a, b) => b.score - a.score);
 
-	// A car number can collide with a bus fleet number, so car hits join the
-	// direct hits instead of replacing them. A train already matched by its own
-	// label keeps one row and gains the car it carries.
+	// Car hits join direct hits because a car number can collide with a bus fleet
+	// number. A train already matched by label gains the car instead of a new row.
 	const lirrEntities = feedEntities.find(
 		({ feed }) => feed === "lirr"
 	)?.entities;
@@ -626,10 +652,8 @@ async function findVehicles(
 		}
 	}
 
-	// Fleet classes are searchable too: `M9` returns the M9 trains in service.
-	// This is LIRR-only because the subway and bus feeds do not publish a car
-	// class for an individual train; guessing one from a route would be wrong.
-	if (wantsLirrSearch && !wantsCarSearch && lirrEntities?.length) {
+	// Fleet classes are LIRR-only; the subway and bus feeds publish no car class.
+	if (wantsFleetSearch && lirrEntities?.length) {
 		const consists = await consistsPromise;
 		if (consists) {
 			const fleetHits = fleetSearchHits(needle, lirrEntities, consists);
@@ -668,31 +692,31 @@ async function findVehicles(
 	});
 	if (resolved.length === 0) return [];
 
-	const groups = new Map<
-		string,
-		{ agency: AgencyId; route: string; ids: Set<string> }
-	>();
+	const groups = new Map<AgencyId, { routes: Set<string>; ids: Set<string> }>();
 
 	for (const hit of resolved.slice(0, 40)) {
-		const key = `${hit.agency}:${hit.route}`;
-		let group = groups.get(key);
+		let group = groups.get(hit.agency);
 		if (!group) {
-			group = { agency: hit.agency, route: hit.route, ids: new Set() };
-			groups.set(key, group);
+			group = { routes: new Set(), ids: new Set() };
+			groups.set(hit.agency, group);
 		}
 
+		group.routes.add(hit.route);
 		const id = hit.entity.id ?? hit.entity.vehicle?.vehicle?.id;
 		if (id) group.ids.add(id);
 	}
 
 	const vehicles = await Promise.all(
-		[...groups.values()].map(async (group) => {
-			const found = await getVehiclesForAgency(group.agency, [group.route]);
+		[...groups].map(async ([agency, group]) => {
+			const found = await getVehiclesForAgency(
+				agency,
+				[...group.routes].toSorted()
+			);
 			return found
 				.filter((vehicle) => group.ids.has(vehicle.id))
 				.map((vehicle) => ({
 					...vehicle,
-					agency: group.agency,
+					agency,
 				}));
 		})
 	);
