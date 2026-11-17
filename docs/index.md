@@ -16,6 +16,7 @@ All successful responses use `{ "data": ... }`; failures use `{ "error": { "code
 
 ## API guides
 
+- [AI agents](/agents): direct HTTP recipes and the bundled MCP server.
 - [Agencies](/agencies) — available feeds and agency IDs.
 - [Routes](/routes) — route listings and GeoJSON shapes.
 - [Stops and schedules](/stops) — stop lookup, proximity search, and departures.

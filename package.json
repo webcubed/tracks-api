@@ -17,6 +17,7 @@
 		"format": "prettier --write .",
 		"lint": "xo .",
 		"lint:fix": "xo --fix",
+		"mcp": "tsx mcp/server.ts",
 		"start": "node scripts/ensure-docs.mjs && MALLOC_ARENA_MAX=2 node --max-old-space-size=256 --import tsx src/index.ts"
 	},
 	"dependencies": {
@@ -24,11 +25,13 @@
 		"@duckdb/node-api": "1.5.3-r.1",
 		"@hono/node-server": "^2.1.1",
 		"@libsql/client": "^0.17.4",
+		"@modelcontextprotocol/sdk": "^1.32.2",
 		"csv-parser": "^3.2.1",
 		"hono": "^4.13.3",
 		"prettier": "^3.9.6",
 		"protobufjs": "^8.7.2",
-		"tsx": "^4.23.12"
+		"tsx": "^4.23.12",
+		"zod": "^4.6.7"
 	},
 	"devDependencies": {
 		"@ianvs/prettier-plugin-sort-imports": "^4.7.1",

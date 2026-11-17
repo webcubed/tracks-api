@@ -30,6 +30,7 @@ These fallbacks are undocumented, unstable production APIs. GTFS first, fallback
 ```sh
 pnpm dev                 # tsx watch, needs .env (missing is fine — nothing reads it)
 pnpm exec tsx src/index.ts   # no watch; server on :3000
+pnpm mcp                 # stdio MCP server (mcp/server.ts), proxies TRACKS_API_URL
 pnpm lint                # xo (see "Lint" below)
 pnpm exec tsc --noEmit   # typecheck — run with lint, always
 pnpm exec prettier --write <files>
@@ -68,6 +69,7 @@ src/
 │   └── journey/          # the round-based planner: types, labels, scan, render
 ├── v1/index.ts           # mounts route groups
 ├── v1/routes/            # Hono routers, one per spec section
+├── mcp/server.ts         # stdio MCP proxy over /v1; no state, no hosting
 └── types/
     ├── api.ts            # ApiResponse<T>, ApiErrorResponse<T>
     ├── static.ts         # GTFS row types + TableMap

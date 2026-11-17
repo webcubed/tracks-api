@@ -15,7 +15,7 @@ Static GTFS data (schedules, routes, stops, shapes) is served from Parquet files
 | `GET /v1/stops/:id`                                           | One stop's detail; feeds are searched in a fixed order, subway first (`?agency=` pins one feed: LIRR's Penn Station is `237?agency=lirr`)                                                                                                               |
 | `GET /v1/stops/:id/schedule?date=`                            | Scheduled departures for a date (defaults to today), service-day exceptions applied (`?agency=` as above)                                                                                                                                               |
 | `GET /v1/arrivals?stop=&route=&agency=`                       | Live arrivals from GTFS-RT trip updates: delay-aware, with headsign, direction, occupancy, and vehicle id (`agency` pins the stop's feed)                                                                                                               |
-| `GET /v1/vehicles?route=&agency=`                             | Live vehicle positions, bearing, speed, next stop, and each LIRR train's track section (`W2`, `R8`) from the tracking system                                                                                                                                                                                          |
+| `GET /v1/vehicles?route=&agency=`                             | Live vehicle positions, bearing, speed, next stop, and each LIRR train's track section (`W2`, `R8`) from the tracking system                                                                                                                            |
 | `GET /v1/alerts?agency=&route=`                               | Service alerts with severity, effect, and active periods                                                                                                                                                                                                |
 | `GET /v1/fares?agency=`                                       | Current fares per agency (base, reduced, express, CityTicket)                                                                                                                                                                                           |
 | `GET /v1/journey?from=&to=&date=&time=&fromAgency=&toAgency=` | Earliest-arrival itineraries on the static timetable: up to three rides (subway + LIRR), station-level transfers via `transfers.txt`, and walk connections between nearby stations across feeds (`fromAgency`/`toAgency` pin the feed for shadowed ids) |
@@ -37,6 +37,19 @@ pnpm dev                    # tsx watch; server on :3000
 For a production start, use `pnpm build && pnpm start`. The server honors the platform-provided `PORT` environment variable (defaults to `3000`).
 
 `pnpm start` also builds the documentation on first start whenever `docs/.vitepress/dist` is missing (it is a gitignored artifact), so hosts whose build step only installs dependencies — Render, for one — still serve `/docs/`. This needs devDependencies to be installed; a production-only install logs a warning and serves the API without its docs.
+
+## AI agents
+
+Every `/v1` route is a plain `GET` returning JSON, with no key or SDK required, so an agent that can make an HTTP request can use the API directly. [`docs/agents.md`](docs/agents.md) has the base URL, a request loop, and the response pitfalls worth knowing (route shapes are large, stop ids repeat across feeds).
+
+`mcp/server.ts` is an optional stdio MCP server for clients that work through tools. It proxies the same routes, holds no data, and runs as a local child process:
+
+```sh
+pnpm install
+pnpm mcp
+```
+
+Set `TRACKS_API_URL` to target another instance. That page also covers client configuration and the full tool list, and is served at `/docs/agents`.
 
 ## Quickstart
 

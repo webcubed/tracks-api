@@ -16,6 +16,7 @@ export default defineConfig({
 				text: "API Reference",
 				items: [
 					{ text: "Overview", link: "/" },
+					{ text: "AI agents", link: "/agents" },
 					{ text: "Agencies", link: "/agencies" },
 					{ text: "Routes", link: "/routes" },
 					{ text: "Stops and schedules", link: "/stops" },
