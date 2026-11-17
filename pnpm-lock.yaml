@@ -20,9 +20,6 @@ importers:
       '@libsql/client':
         specifier: ^0.17.4
         version: 0.17.4
-      '@modelcontextprotocol/sdk':
-        specifier: ^1.32.2
-        version: 1.32.2(supports-color@10.2.2)(zod@4.6.7)
       csv-parser:
         specifier: ^3.2.1
         version: 3.2.1
@@ -38,13 +35,13 @@ importers:
       tsx:
         specifier: ^4.23.12
         version: 4.23.12
-      zod:
-        specifier: ^4.6.7
-        version: 4.6.7
     devDependencies:
       '@ianvs/prettier-plugin-sort-imports':
         specifier: ^4.7.1
         version: 4.7.1(@vue/compiler-sfc@3.5.43)(prettier@3.9.6)(supports-color@10.2.2)
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.32.2
+        version: 1.32.2(supports-color@10.2.2)(zod@4.6.7)
       '@types/adm-zip':
         specifier: ^0.5.8
         version: 0.5.8
@@ -63,6 +60,9 @@ importers:
       xo:
         specifier: ^2.0.2
         version: 2.0.2(@types/eslint@9.6.1)(@typescript-eslint/utils@8.67.0(eslint@10.9.0(supports-color@10.2.2))(supports-color@10.2.2)(typescript@6.0.3))(supports-color@10.2.2)
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
 
 packages:
 
