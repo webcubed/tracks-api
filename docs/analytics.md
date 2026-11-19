@@ -194,6 +194,10 @@ How often service runs. `route` narrows to one route's first departures; `stop` 
 }
 ```
 
+Each route in the report carries the feed's own `longName` and `shortName`, so a client that has not loaded a feed's route list can still name the route.
+
+`agency=bus` merges the six borough feeds into one report for the whole bus network: `route` filters inside every feed, and a `stop` still needs its borough feed (`400 AGENCY_REQUIRED` otherwise). Reading all six costs about twenty seconds cold, so each feed's timetable is scanned once per date and shared with any request already scanning it, and the merged bus report is built in the background at startup and after each hourly feed refresh. Warm, it answers in a few milliseconds.
+
 ## Why frequency comes from the timetable
 
 The archive answers reliability and car history because no timetable can. Frequency is the opposite: the timetable answers it exactly, for any date including tomorrow, in one query. A recorded headway could only describe the days the recorder happened to be running, which is strictly less than what the operator published. So `frequency` reads `trips` and `stop_times` for the date, and everything else here reads the archive.

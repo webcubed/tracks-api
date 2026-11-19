@@ -1,7 +1,7 @@
 import type { ColumnSpec, Row } from "@/archive/parquet";
 /* eslint-disable require-unicode-regexp -- tsconfig targets ES2017, which cannot compile the v flag */
 import { Buffer } from "node:buffer";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, rename, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -83,6 +83,12 @@ export async function archiveParts(
 		.toSorted((a, b) => a.epoch - b.epoch);
 }
 
+/**
+ * Downloads in flight by cache file, so two panels asking for the same part
+ * share one download instead of racing to write the same temporary file.
+ */
+const inFlight = new Map<string, Promise<string>>();
+
 /** Objects are immutable, so a cached copy is valid until its size changes. */
 async function cached(key: string, size: number): Promise<string> {
 	const name = `${createHash("sha256").update(key).digest("hex").slice(0, 32)}.parquet`;
@@ -95,6 +101,18 @@ async function cached(key: string, size: number): Promise<string> {
 		// Not cached yet.
 	}
 
+	const pending = inFlight.get(name);
+	if (pending) return pending;
+
+	const download = fetchPart(key, target).finally(() => {
+		inFlight.delete(name);
+	});
+	inFlight.set(name, download);
+
+	return download;
+}
+
+async function fetchPart(key: string, target: string): Promise<string> {
 	await mkdir(CACHE_DIR, { recursive: true });
 	const body = await getObject(key);
 	if (
@@ -105,7 +123,9 @@ async function cached(key: string, size: number): Promise<string> {
 		throw new Error(`archive object is not parquet: ${key}`);
 	}
 
-	const temporary = `${target}.${process.pid}.tmp`;
+	// Two processes may share the cache directory, so the temporary name is
+	// unique per download: a rename needs its source to still be there.
+	const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
 	await writeFile(temporary, body);
 	await rename(temporary, target);
 

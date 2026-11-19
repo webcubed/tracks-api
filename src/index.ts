@@ -8,6 +8,8 @@ import { experimental } from "./experimental";
 import { loadTable } from "./lib/loadTable";
 import { clearMemoized } from "./lib/memoize";
 import { cachedParquet } from "./lib/parquetCache";
+import { today } from "./lib/time";
+import { clearFrequencyCache, getBusFrequency } from "./services/analytics";
 import { getStations } from "./services/network";
 import { getRoutes } from "./services/routes";
 import { v1 } from "./v1";
@@ -111,14 +113,33 @@ async function warmJourneyIndexes(): Promise<void> {
 	);
 }
 
+/**
+ * The bus tab's rhythm merges six borough feeds: ten seconds of parquet that
+ * no page load should wait for, so it is built in the background once the
+ * journey indexes are in.
+ */
+async function warmFrequency(): Promise<void> {
+	const warmupStartedAt = Date.now();
+	try {
+		const report = await getBusFrequency(today());
+		console.info(
+			`[startup] Bus timetable rhythm ready in ${elapsed(warmupStartedAt)}: ${report?.trips ?? 0} departures`
+		);
+	} catch (error) {
+		console.error("[startup] Bus timetable rhythm warmup failed:", error);
+	}
+}
+
 // Spec: static tables refresh hourly. Clear-then-warm means requests during
 // the ~10s reload wait for fresh data rather than serving yesterday's tables.
 // honey: a failed refresh leaves the caches empty; the next request retries
 // through memoize's self-eviction instead of serving stale rows.
 setInterval(() => {
 	clearMemoized();
+	clearFrequencyCache();
 	warmStatic("refresh")
 		.then(warmJourneyIndexes)
+		.then(warmFrequency)
 		.catch((error: unknown) => {
 			console.error("static refresh failed:", error);
 		});
@@ -133,9 +154,17 @@ serve({
 console.info(
 	`[startup] Server ready at http://localhost:${port} (startup took ${elapsed(startupStartedAt)})`
 );
-// Deliberately backgrounded so readiness never waits on timetable downloads.
-// eslint-disable-next-line unicorn/prefer-top-level-await
-warmJourneyIndexes().catch((error: unknown) => {
-	console.error("journey timetable warmup failed:", error);
-});
+/** Both caches are optional infrastructure: readiness never waits on them. */
+async function warmInBackground(): Promise<void> {
+	try {
+		await warmJourneyIndexes();
+	} catch (error) {
+		console.error("journey timetable warmup failed:", error);
+	}
+
+	await warmFrequency();
+}
+
+// eslint-disable-next-line unicorn/prefer-top-level-await -- readiness must not wait on timetable downloads
+void warmInBackground();
 export default app;

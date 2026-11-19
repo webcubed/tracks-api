@@ -4,6 +4,7 @@ import { missingB2Env } from "@/lib/b2";
 import { isValidDate, today } from "@/lib/time";
 import {
 	clampHours,
+	getBusFrequency,
 	getCarHistory,
 	getCoverage,
 	getFrequency,
@@ -134,10 +135,14 @@ analytics.get("/stops/:id", async (c) => {
 /**
  * Service frequency for a date, from the timetable. A `route` narrows it to one
  * route's first departures; a `stop` counts every trip that calls there.
+ *
+ * `agency=bus` is the whole bus network: the six borough feeds merged, because
+ * the bus tab covers every borough. A stop still needs one borough feed.
  */
 analytics.get("/frequency", async (c) => {
 	const agency = c.req.query("agency") ?? "";
-	if (!isAgencyId(agency)) return c.json(agencyNotFound(agency), 404);
+	const isBus = agency === "bus";
+	if (!isBus && !isAgencyId(agency)) return c.json(agencyNotFound(agency), 404);
 
 	const date = c.req.query("date") ?? today();
 	if (!isValidDate(date)) {
@@ -152,11 +157,29 @@ analytics.get("/frequency", async (c) => {
 		);
 	}
 
+	const route = c.req.query("route") ?? undefined;
+	const stopId = c.req.query("stop") ?? undefined;
+	if (isBus) {
+		if (stopId) {
+			return c.json(
+				{
+					error: {
+						code: "AGENCY_REQUIRED",
+						message: "A stop needs the borough feed it belongs to",
+					},
+				},
+				400
+			);
+		}
+
+		return c.json({ data: await getBusFrequency(date, route) });
+	}
+
 	const data = await getFrequency({
-		agency,
+		agency: isAgencyId(agency) ? agency : "subway",
 		date,
-		route: c.req.query("route") ?? undefined,
-		stopId: c.req.query("stop") ?? undefined,
+		route,
+		stopId,
 	});
 
 	if (!data) {

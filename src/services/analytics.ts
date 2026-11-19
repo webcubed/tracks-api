@@ -1,7 +1,7 @@
 import type { AgencyId } from "@/constants";
 import { archiveUsesSharedConnection, runArchiveQuery } from "@/archive/duck";
 import { archiveFiles, archiveSummary } from "@/archive/store";
-import { getStaticFeedUrl } from "@/constants";
+import { AGENCY_IDS, getStaticFeedUrl } from "@/constants";
 import { distanceMeters } from "@/lib/geo";
 import { runQuery } from "@/lib/parquet";
 import { clockSeconds } from "@/lib/time";
@@ -488,6 +488,9 @@ export type FrequencyHour = { hour: string; trips: number };
 
 export type FrequencyRoute = {
 	route: string;
+	/** The feed's own name for the route, so a panel can say what it serves. */
+	longName?: string;
+	shortName?: string;
 	trips: number;
 	firstDeparture?: string;
 	lastDeparture?: string;
@@ -538,7 +541,47 @@ function headways(times: number[]): { peak?: number; median?: number } {
  * `stop` counts every trip calling there; without it, only first stops count,
  * so a route's own frequency is not multiplied by its stop count.
  */
+const frequencyMemo = new Map<string, Promise<FrequencyReport | undefined>>();
+
+/**
+ * A timetable answer is fixed for its date, and one scan reads tens of
+ * megabytes of remote parquet. One scan per feed, date and filter serves every
+ * request; a scan already in flight is shared rather than started again.
+ */
+async function memoizedFrequency(
+	key: string,
+	scan: () => Promise<FrequencyReport | undefined>
+): Promise<FrequencyReport | undefined> {
+	const pending = frequencyMemo.get(key);
+	if (pending) return pending;
+
+	const running = scan().catch((error: unknown) => {
+		frequencyMemo.delete(key);
+		throw error;
+	});
+	frequencyMemo.set(key, running);
+
+	return running;
+}
+
+/** Drop cached scans: the hourly static refresh may have changed a feed. */
+export function clearFrequencyCache(): void {
+	frequencyMemo.clear();
+}
+
 export async function getFrequency(options: {
+	agency: AgencyId;
+	date: string;
+	route?: string;
+	stopId?: string;
+}): Promise<FrequencyReport | undefined> {
+	const { agency, date, route, stopId } = options;
+	const key = [agency, date, route ?? "", stopId ?? ""].join("|");
+
+	return memoizedFrequency(key, async () => scanFrequency(options));
+}
+
+async function scanFrequency(options: {
 	agency: AgencyId;
 	date: string;
 	route?: string;
@@ -576,6 +619,18 @@ export async function getFrequency(options: {
 		byRoute.set(row.route, list);
 	}
 
+	// Route names come from the feed's routes table, which the hourly warmup
+	// already holds: no extra parquet read, and a panel can name a bus route.
+	const feedRoutes = await getRoutes(agency);
+	const names = new Map(
+		feedRoutes.map((route) => [
+			route.id,
+			{
+				longName: route.longName || undefined,
+				shortName: route.shortName || undefined,
+			},
+		])
+	);
 	const routes: FrequencyRoute[] = [...byRoute]
 		.map(([id, departures]) => {
 			const times = departures.map((departure) =>
@@ -591,6 +646,8 @@ export async function getFrequency(options: {
 
 			return {
 				route: id,
+				longName: names.get(id)?.longName,
+				shortName: names.get(id)?.shortName,
 				trips: departures.length,
 				firstDeparture: departures[0]?.departure_time,
 				lastDeparture: departures.at(-1)?.departure_time,
@@ -619,4 +676,105 @@ export async function getFrequency(options: {
 		routes,
 		source: "timetable",
 	};
+}
+
+/** The borough feeds the bus tab covers: every `bus_*` feed. */
+const BUS_FEEDS: readonly AgencyId[] = AGENCY_IDS.filter((id) =>
+	id.startsWith("bus_")
+);
+
+function mergeHours(
+	left: FrequencyHour[],
+	right: FrequencyHour[]
+): FrequencyHour[] {
+	const buckets = new Map(left.map((entry) => [entry.hour, entry.trips]));
+	for (const entry of right)
+		buckets.set(entry.hour, (buckets.get(entry.hour) ?? 0) + entry.trips);
+
+	return [...buckets]
+		.toSorted(([a], [b]) => Number(a) - Number(b))
+		.map(([hour, trips]) => ({ hour, trips }));
+}
+
+function soonest(left?: number, right?: number): number | undefined {
+	if (left === undefined) return right;
+	if (right === undefined) return left;
+
+	return Math.min(left, right);
+}
+
+/**
+ * Bus rhythm across every borough. The six feeds are scanned one at a time
+ * (queries share one DuckDB connection) and merged, which is why the result is
+ * memoized per date and warmed at startup: ten seconds of remote parquet
+ * should not sit in front of a page load.
+ *
+ * Route ids are unique across the borough feeds today; if one is ever shared,
+ * the merge counts both feeds rather than dropping a borough.
+ */
+export async function getBusFrequency(
+	date: string,
+	route?: string
+): Promise<FrequencyReport | undefined> {
+	return memoizedFrequency(`bus|${date}|${route ?? ""}`, async () => {
+		const reports: FrequencyReport[] = [];
+		for (const feed of BUS_FEEDS) {
+			// eslint-disable-next-line no-await-in-loop -- one shared DuckDB connection
+			const report = await getFrequency({ agency: feed, date, route });
+			if (report) reports.push(report);
+		}
+
+		const merged = new Map<string, FrequencyRoute>();
+		let trips = 0;
+		for (const report of reports) {
+			trips += report.trips;
+			for (const entry of report.routes) {
+				const existing = merged.get(entry.route);
+				if (!existing) {
+					merged.set(entry.route, {
+						...entry,
+						tripsPerHour: [...entry.tripsPerHour],
+					});
+					continue;
+				}
+
+				existing.trips += entry.trips;
+				existing.tripsPerHour = mergeHours(
+					existing.tripsPerHour,
+					entry.tripsPerHour
+				);
+				existing.peakHeadwayMinutes = soonest(
+					existing.peakHeadwayMinutes,
+					entry.peakHeadwayMinutes
+				);
+				existing.medianHeadwayMinutes = soonest(
+					existing.medianHeadwayMinutes,
+					entry.medianHeadwayMinutes
+				);
+				if (
+					entry.firstDeparture !== undefined &&
+					(existing.firstDeparture === undefined ||
+						entry.firstDeparture < existing.firstDeparture)
+				)
+					existing.firstDeparture = entry.firstDeparture;
+				if (
+					entry.lastDeparture !== undefined &&
+					(existing.lastDeparture === undefined ||
+						entry.lastDeparture > existing.lastDeparture)
+				)
+					existing.lastDeparture = entry.lastDeparture;
+			}
+		}
+
+		return {
+			agency: "bus",
+			date,
+			route,
+			trips,
+			routes: [...merged.values()].toSorted((a, b) =>
+				a.route.localeCompare(b.route, undefined, { numeric: true })
+			),
+			source: "timetable" as const,
+		};
+	});
 }
