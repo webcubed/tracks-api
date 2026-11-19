@@ -2,7 +2,7 @@ import type { ColumnSpec, Row } from "@/archive/parquet";
 /* eslint-disable require-unicode-regexp -- tsconfig targets ES2017, which cannot compile the v flag */
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
-import { mkdir, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdir, rename, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { rowsToParquet } from "@/archive/parquet";
@@ -96,8 +96,6 @@ async function cached(key: string, size: number): Promise<string> {
 	}
 
 	await mkdir(CACHE_DIR, { recursive: true });
-	// The key goes in a sidecar so a restart never re-downloads the same part.
-	const marker = `${target}.key`;
 	const body = await getObject(key);
 	if (
 		body.byteLength < 8 ||
@@ -109,7 +107,6 @@ async function cached(key: string, size: number): Promise<string> {
 
 	const temporary = `${target}.${process.pid}.tmp`;
 	await writeFile(temporary, body);
-	await writeFile(marker, key);
 	await rename(temporary, target);
 
 	return target;

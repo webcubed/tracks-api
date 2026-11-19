@@ -253,22 +253,6 @@ async function retrying(
 	throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
-/** Remove one object. A key that is already gone is not an error. */
-export async function deleteObject(key: string): Promise<void> {
-	const config = requireConfig();
-
-	const request = sign(config, { method: "DELETE", key });
-	await retrying(key, async () => {
-		const response = await fetch(request.url, {
-			method: "DELETE",
-			headers: request.headers,
-			signal: AbortSignal.timeout(30_000),
-		});
-
-		return response.status === 404 ? Response.json({}) : response;
-	});
-}
-
 export type B2Object = { key: string; size: number };
 
 function decodeXml(value: string): string {
