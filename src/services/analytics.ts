@@ -564,6 +564,14 @@ async function memoizedFrequency(
 	return running;
 }
 
+/**
+ * Drop cached scans. The supplemented timetable is republished hourly, so a
+ * report describes the feed as it stood when it was built, not as it stands now.
+ */
+export function clearFrequencyCache(): void {
+	frequencyMemo.clear();
+}
+
 export async function getFrequency(options: {
 	agency: AgencyId;
 	date: string;
@@ -701,8 +709,8 @@ function soonest(left?: number, right?: number): number | undefined {
 /**
  * Bus rhythm across every borough. The six feeds are scanned one at a time
  * (queries share one DuckDB connection) and merged, which is why the result is
- * memoized per date and warmed at startup: ten seconds of remote parquet
- * should not sit in front of a page load.
+ * memoized per date, warmed at startup and rebuilt just after midnight: twenty
+ * seconds of remote parquet should not sit in front of a page load.
  *
  * Route ids are unique across the borough feeds today; if one is ever shared,
  * the merge counts both feeds rather than dropping a borough.

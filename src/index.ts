@@ -9,7 +9,7 @@ import { loadTable } from "./lib/loadTable";
 import { clearMemoized } from "./lib/memoize";
 import { cachedParquet } from "./lib/parquetCache";
 import { today } from "./lib/time";
-import { getBusFrequency } from "./services/analytics";
+import { clearFrequencyCache, getBusFrequency } from "./services/analytics";
 import { getStations } from "./services/network";
 import { getRoutes } from "./services/routes";
 import { v1 } from "./v1";
@@ -117,7 +117,8 @@ async function warmJourneyIndexes(): Promise<void> {
  * The bus tab's rhythm merges six borough feeds: twenty seconds of parquet that
  * no page load should wait for, so it is built once in the background after the
  * journey indexes are in. It is not rebuilt by the hourly refresh, which would
- * stall live queries for the length of the scan.
+ * stall live queries for the length of the scan; `scheduleDailyWarm` rebuilds it
+ * for each new date instead.
  */
 async function warmFrequency(): Promise<void> {
 	const warmupStartedAt = Date.now();
@@ -131,14 +132,60 @@ async function warmFrequency(): Promise<void> {
 	}
 }
 
+const SECONDS_PER_DAY = 86_400;
+/** Five minutes past the timetable's midnight, after any clock skew settles. */
+const DAILY_WARM_SECONDS = 300;
+
+/** New York wall clock, the timezone the timetable's dates are written in. */
+function newYorkClockSeconds(): number {
+	const parts = new Intl.DateTimeFormat("en-US", {
+		timeZone: "America/New_York",
+		hour: "2-digit",
+		minute: "2-digit",
+		second: "2-digit",
+		hourCycle: "h23",
+	}).formatToParts(new Date());
+	const value = (type: "hour" | "minute" | "second"): number =>
+		Number(parts.find((part) => part.type === type)?.value ?? 0);
+
+	return value("hour") * 3600 + value("minute") * 60 + value("second");
+}
+
+/**
+ * The supplemented timetable is republished hourly, so a report is not final for
+ * its date and its cache can only age. Rebuild just after midnight, when the new
+ * date starts: otherwise the first bus request of the day pays the full
+ * twenty-second scan. A chain of one-day timeouts rather than a 24-hour interval
+ * keeps the tick at midnight across a DST change.
+ */
+function scheduleDailyWarm(): void {
+	let waitSeconds = DAILY_WARM_SECONDS - newYorkClockSeconds();
+	if (waitSeconds <= 0) waitSeconds += SECONDS_PER_DAY;
+
+	console.info(
+		`[schedule] Bus timetable rhythm rebuild in ${(waitSeconds / 3600).toFixed(1)}h`
+	);
+
+	setTimeout(() => {
+		clearFrequencyCache();
+		warmFrequency()
+			.then(scheduleDailyWarm)
+			.catch((error: unknown) => {
+				console.error("daily timetable warm failed:", error);
+				scheduleDailyWarm();
+			});
+	}, waitSeconds * 1000);
+}
+
 // Spec: static tables refresh hourly. Clear-then-warm means requests during
 // the ~10s reload wait for fresh data rather than serving yesterday's tables.
 // honey: a failed refresh leaves the caches empty; the next request retries
 // through memoize's self-eviction instead of serving stale rows.
 // The bus rhythm is deliberately absent: rescanning six borough feeds here put
-// a twenty-second queue in front of live queries every hour. Its cache is keyed
-// by date, so an hourly rebuild could only re-derive the same answer; a new
-// date scans on demand instead.
+// a twenty-second queue in front of live queries every hour. The cost is that a
+// report describes the timetable as it stood when it was built, not as it
+// stands now, because the supplemented feed is republished hourly; the daily
+// midnight rebuild is what refreshes it, so a service change can lag until then.
 setInterval(() => {
 	clearMemoized();
 	warmStatic("refresh")
@@ -166,6 +213,7 @@ async function warmInBackground(): Promise<void> {
 	}
 
 	await warmFrequency();
+	scheduleDailyWarm();
 }
 
 // eslint-disable-next-line unicorn/prefer-top-level-await -- readiness must not wait on timetable downloads
