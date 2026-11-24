@@ -116,80 +116,45 @@ async function warmJourneyIndexes(): Promise<void> {
 /**
  * The bus tab's rhythm merges six borough feeds: twenty seconds of parquet that
  * no page load should wait for, so it is built once in the background after the
- * journey indexes are in. It is not rebuilt by the hourly refresh, which would
- * stall live queries for the length of the scan; `scheduleDailyWarm` rebuilds it
- * for each new date instead.
+ * journey indexes are in, and rebuilt by the hourly refresh on its own DuckDB
+ * connection (see `services/analytics.ts`).
  */
-async function warmFrequency(): Promise<void> {
+async function warmFrequency(
+	phase: "startup" | "refresh" = "startup"
+): Promise<void> {
 	const warmupStartedAt = Date.now();
 	try {
 		const report = await getBusFrequency(today());
 		console.info(
-			`[startup] Bus timetable rhythm ready in ${elapsed(warmupStartedAt)}: ${report?.trips ?? 0} departures`
+			`[${phase}] Bus timetable rhythm ready in ${elapsed(warmupStartedAt)}: ${report?.trips ?? 0} departures`
 		);
 	} catch (error) {
-		console.error("[startup] Bus timetable rhythm warmup failed:", error);
+		console.error(`[${phase}] Bus timetable rhythm warmup failed:`, error);
 	}
 }
 
-const SECONDS_PER_DAY = 86_400;
-/** Five minutes past the timetable's midnight, after any clock skew settles. */
-const DAILY_WARM_SECONDS = 300;
-
-/** New York wall clock, the timezone the timetable's dates are written in. */
-function newYorkClockSeconds(): number {
-	const parts = new Intl.DateTimeFormat("en-US", {
-		timeZone: "America/New_York",
-		hour: "2-digit",
-		minute: "2-digit",
-		second: "2-digit",
-		hourCycle: "h23",
-	}).formatToParts(new Date());
-	const value = (type: "hour" | "minute" | "second"): number =>
-		Number(parts.find((part) => part.type === type)?.value ?? 0);
-
-	return value("hour") * 3600 + value("minute") * 60 + value("second");
-}
-
 /**
- * The supplemented timetable is republished hourly, so a report is not final for
- * its date and its cache can only age. Rebuild just after midnight, when the new
- * date starts: otherwise the first bus request of the day pays the full
- * twenty-second scan. A chain of one-day timeouts rather than a 24-hour interval
- * keeps the tick at midnight across a DST change.
+ * Drop the cached scans and rebuild today's report from the timetable as it is
+ * published now. The supplemented feed is republished hourly, so a report that
+ * is never rebuilt describes service changes that have since moved.
  */
-function scheduleDailyWarm(): void {
-	let waitSeconds = DAILY_WARM_SECONDS - newYorkClockSeconds();
-	if (waitSeconds <= 0) waitSeconds += SECONDS_PER_DAY;
-
-	console.info(
-		`[schedule] Bus timetable rhythm rebuild in ${(waitSeconds / 3600).toFixed(1)}h`
-	);
-
-	setTimeout(() => {
-		clearFrequencyCache();
-		warmFrequency()
-			.then(scheduleDailyWarm)
-			.catch((error: unknown) => {
-				console.error("daily timetable warm failed:", error);
-				scheduleDailyWarm();
-			});
-	}, waitSeconds * 1000);
+async function refreshFrequency(): Promise<void> {
+	clearFrequencyCache();
+	await warmFrequency("refresh");
 }
 
 // Spec: static tables refresh hourly. Clear-then-warm means requests during
 // the ~10s reload wait for fresh data rather than serving yesterday's tables.
 // honey: a failed refresh leaves the caches empty; the next request retries
 // through memoize's self-eviction instead of serving stale rows.
-// The bus rhythm is deliberately absent: rescanning six borough feeds here put
-// a twenty-second queue in front of live queries every hour. The cost is that a
-// report describes the timetable as it stood when it was built, not as it
-// stands now, because the supplemented feed is republished hourly; the daily
-// midnight rebuild is what refreshes it, so a service change can lag until then.
+// The bus rhythm follows the same tick, on its own DuckDB connection: sharing
+// the live one cost a live request about 0.6 s of queue time and stretched the
+// scan itself, so the rebuild now runs beside it instead of in front of it.
 setInterval(() => {
 	clearMemoized();
 	warmStatic("refresh")
 		.then(warmJourneyIndexes)
+		.then(refreshFrequency)
 		.catch((error: unknown) => {
 			console.error("static refresh failed:", error);
 		});
@@ -213,7 +178,6 @@ async function warmInBackground(): Promise<void> {
 	}
 
 	await warmFrequency();
-	scheduleDailyWarm();
 }
 
 // eslint-disable-next-line unicorn/prefer-top-level-await -- readiness must not wait on timetable downloads

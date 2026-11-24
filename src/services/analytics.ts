@@ -3,7 +3,7 @@ import { archiveUsesSharedConnection, runArchiveQuery } from "@/archive/duck";
 import { archiveFiles, archiveSummary } from "@/archive/store";
 import { AGENCY_IDS, getStaticFeedUrl } from "@/constants";
 import { distanceMeters } from "@/lib/geo";
-import { runQuery } from "@/lib/parquet";
+import { createSideDuck } from "@/lib/sideDuck";
 import { clockSeconds } from "@/lib/time";
 import { getRoutes } from "@/services/routes";
 import { activeServices } from "@/services/schedule";
@@ -544,6 +544,20 @@ function headways(times: number[]): { peak?: number; median?: number } {
 const frequencyMemo = new Map<string, Promise<FrequencyReport | undefined>>();
 
 /**
+ * Timetable scans read `stop_times` for a whole feed, which is tens of megabytes
+ * and seconds of work. On the live connection that queue would hold every other
+ * request behind a scan, so the frequency reports get a connection of their own.
+ * `FREQUENCY_DUCKDB=shared` puts them back on the live one, for measuring the
+ * difference.
+ */
+const frequency = createSideDuck({
+	label: "frequency",
+	memoryLimit: process.env.FREQUENCY_DUCKDB_MEMORY_LIMIT ?? "128MB",
+	remote: true,
+	shared: process.env.FREQUENCY_DUCKDB === "shared",
+});
+
+/**
  * A timetable answer is fixed for its date, and one scan reads tens of
  * megabytes of remote parquet. One scan per feed, date and filter serves every
  * request; a scan already in flight is shared rather than started again.
@@ -604,7 +618,7 @@ async function scanFrequency(options: {
 		...service.parameters,
 	];
 
-	const rows = await runQuery<DepartureRow>(
+	const rows = await frequency.query<DepartureRow>(
 		`SELECT t.route_id AS route, st.departure_time
 		 FROM read_parquet('${getStaticFeedUrl(agency, "stop_times")}') st
 		 JOIN read_parquet('${getStaticFeedUrl(agency, "trips")}') t ON t.trip_id = st.trip_id
@@ -709,8 +723,8 @@ function soonest(left?: number, right?: number): number | undefined {
 /**
  * Bus rhythm across every borough. The six feeds are scanned one at a time
  * (queries share one DuckDB connection) and merged, which is why the result is
- * memoized per date, warmed at startup and rebuilt just after midnight: twenty
- * seconds of remote parquet should not sit in front of a page load.
+ * memoized per date, warmed at startup and rebuilt hourly: seconds of remote
+ * parquet should not sit in front of a page load, nor in front of a live query.
  *
  * Route ids are unique across the borough feeds today; if one is ever shared,
  * the merge counts both feeds rather than dropping a borough.

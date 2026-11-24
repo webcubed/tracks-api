@@ -40,18 +40,20 @@ pnpm record --probe      # parts, bytes and time span in the bucket
 
 A failed upload returns its rows to the buffer and is retried on the next flush, and the upload itself retries server errors, so a short storage outage delays the archive instead of losing a part.
 
-| Variable                      | Default  | Meaning                                                         |
-| ----------------------------- | -------- | --------------------------------------------------------------- |
-| `B2_ENDPOINT`                 | required | S3 origin, for example `https://s3.us-east-005.backblazeb2.com` |
-| `B2_REGION`                   | required | Signing region, for example `us-east-005`                       |
-| `B2_KEY_ID`                   | required | Application key ID                                              |
-| `B2_APP_KEY`                  | required | Application key                                                 |
-| `B2_BUCKET`                   | required | Bucket name                                                     |
-| `ARCHIVE_PREFIX`              | `v1`     | Key prefix for every dataset                                    |
-| `ARCHIVE_SAMPLE_MS`           | `60000`  | Time between feed samples                                       |
-| `ARCHIVE_FLUSH_MS`            | `900000` | Time between uploads                                            |
-| `ARCHIVE_DUCKDB`              | unset    | `shared` puts archive reads on the live DuckDB connection       |
-| `ARCHIVE_DUCKDB_MEMORY_LIMIT` | `128MB`  | Memory ceiling for the archive connection                       |
+| Variable                        | Default  | Meaning                                                         |
+| ------------------------------- | -------- | --------------------------------------------------------------- |
+| `B2_ENDPOINT`                   | required | S3 origin, for example `https://s3.us-east-005.backblazeb2.com` |
+| `B2_REGION`                     | required | Signing region, for example `us-east-005`                       |
+| `B2_KEY_ID`                     | required | Application key ID                                              |
+| `B2_APP_KEY`                    | required | Application key                                                 |
+| `B2_BUCKET`                     | required | Bucket name                                                     |
+| `ARCHIVE_PREFIX`                | `v1`     | Key prefix for every dataset                                    |
+| `ARCHIVE_SAMPLE_MS`             | `60000`  | Time between feed samples                                       |
+| `ARCHIVE_FLUSH_MS`              | `900000` | Time between uploads                                            |
+| `ARCHIVE_DUCKDB`                | unset    | `shared` puts archive reads on the live DuckDB connection       |
+| `ARCHIVE_DUCKDB_MEMORY_LIMIT`   | `128MB`  | Memory ceiling for the archive connection                       |
+| `FREQUENCY_DUCKDB`              | unset    | `shared` puts timetable scans on the live DuckDB connection     |
+| `FREQUENCY_DUCKDB_MEMORY_LIMIT` | `128MB`  | Memory ceiling for the timetable connection                     |
 
 Without the `B2_*` variables, the endpoints below answer `503` with code `ARCHIVE_NOT_CONFIGURED`; the rest of the API is unaffected.
 
@@ -196,9 +198,9 @@ How often service runs. `route` narrows to one route's first departures; `stop` 
 
 Each route in the report carries the feed's own `longName` and `shortName`, so a client that has not loaded a feed's route list can still name the route.
 
-`agency=bus` merges the six borough feeds into one report for the whole bus network: `route` filters inside every feed, and a `stop` still needs its borough feed (`400 AGENCY_REQUIRED` otherwise). Reading all six costs about twenty seconds cold, so each feed's timetable is scanned once per date and shared with any request already scanning it, and the merged bus report is built in the background at startup and again just after midnight for the new date. Warm, it answers in a few milliseconds.
+`agency=bus` merges the six borough feeds into one report for the whole bus network: `route` filters inside every feed, and a `stop` still needs its borough feed (`400 AGENCY_REQUIRED` otherwise). Reading all six costs seconds of remote parquet, so each feed's timetable is scanned once per date and shared with any request already scanning it, and the merged bus report is built at startup and rebuilt by the hourly refresh. Warm, it answers in a few milliseconds.
 
-It is not rebuilt by the hourly static refresh: rescanning six feeds there stalled live queries for about twenty seconds every hour. The trade is that a report is not final for its date, because the supplemented timetable behind it is republished hourly. A report built at 09:00 describes the feed as it stood then, and a service change published at 10:00 can stay invisible until the next midnight rebuild or a restart.
+The hourly rebuild matters because a report is not final for its date: the supplemented timetable behind it is republished hourly, so a report built at 09:00 describes the feed as it stood then. Rebuilding it every hour keeps it within an hour of the published timetable. That is affordable because the scans run on their own DuckDB connection, measured below: sharing the live connection made a live request wait behind them.
 
 ## Why frequency comes from the timetable
 
@@ -224,6 +226,15 @@ Archive reads use their own DuckDB connection, because the live connection seria
 - `ARCHIVE_DUCKDB=shared`: the archive query waits behind the live query (about 500 ms instead of 110 ms), and a live request issued during the archive scan waits for it.
 
 The wait equals the scan time, which grows with the number of parts in the window, so a month of history would push live requests around by seconds. That is why the separate connection is the default, at a cost of one extra 128 MB DuckDB instance per process.
+
+Timetable scans need the same isolation for the same reason: one bus report reads six feeds' `stop_times`. Measured with a six-feed scan in flight and a `/v1/stops/127/schedule` request every 250 ms:
+
+| Mode                      | Live request median             | Live request max | Scan         |
+| ------------------------- | ------------------------------- | ---------------- | ------------ |
+| Own connection (default)  | 436 to 443 ms (441 ms baseline) | 486 to 771 ms    | 3.1 to 4.9 s |
+| `FREQUENCY_DUCKDB=shared` | 984 to 1176 ms                  | 2.1 s            | 7.6 to 8.2 s |
+
+The shared queue delays a live request by about one feed's scan rather than the whole report, because the six feeds are six separate queries — and it stretches the scan itself, as the two workloads take turns. On its own connection the rebuild is invisible to live traffic, which is what makes rebuilding it hourly affordable. The extra instance is limited to 128 MB but measured about 15 MB of extra RSS (433 MB peak against 418 MB).
 
 ## Limits
 

@@ -62,6 +62,7 @@ src/
 │   ├── parquet.ts        # queryTable(agency, table, where?) + runQuery(sql) — uncached IO
 │   ├── loadTable.ts      # loadTable(agency, table) — promise-memoized, one feed
 │   ├── memoize.ts        # memoize(fn, ttl?) + clearMemoized() for the hourly refresh
+│   ├── sideDuck.ts       # createSideDuck(...) — second DuckDB connection + queue for long scans
 │   ├── geo.ts            # distanceMeters (haversine)
 │   └── time.ts           # clockSeconds/clockOf, today, isValidDate
 ├── archive/              # history in object storage: b2 SigV4 client, parquet writer,
