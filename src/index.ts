@@ -9,7 +9,7 @@ import { loadTable } from "./lib/loadTable";
 import { clearMemoized } from "./lib/memoize";
 import { cachedParquet } from "./lib/parquetCache";
 import { today } from "./lib/time";
-import { clearFrequencyCache, getBusFrequency } from "./services/analytics";
+import { getBusFrequency } from "./services/analytics";
 import { getStations } from "./services/network";
 import { getRoutes } from "./services/routes";
 import { v1 } from "./v1";
@@ -114,9 +114,10 @@ async function warmJourneyIndexes(): Promise<void> {
 }
 
 /**
- * The bus tab's rhythm merges six borough feeds: ten seconds of parquet that
- * no page load should wait for, so it is built in the background once the
- * journey indexes are in.
+ * The bus tab's rhythm merges six borough feeds: twenty seconds of parquet that
+ * no page load should wait for, so it is built once in the background after the
+ * journey indexes are in. It is not rebuilt by the hourly refresh, which would
+ * stall live queries for the length of the scan.
  */
 async function warmFrequency(): Promise<void> {
 	const warmupStartedAt = Date.now();
@@ -134,12 +135,14 @@ async function warmFrequency(): Promise<void> {
 // the ~10s reload wait for fresh data rather than serving yesterday's tables.
 // honey: a failed refresh leaves the caches empty; the next request retries
 // through memoize's self-eviction instead of serving stale rows.
+// The bus rhythm is deliberately absent: rescanning six borough feeds here put
+// a twenty-second queue in front of live queries every hour. Its cache is keyed
+// by date, so an hourly rebuild could only re-derive the same answer; a new
+// date scans on demand instead.
 setInterval(() => {
 	clearMemoized();
-	clearFrequencyCache();
 	warmStatic("refresh")
 		.then(warmJourneyIndexes)
-		.then(warmFrequency)
 		.catch((error: unknown) => {
 			console.error("static refresh failed:", error);
 		});

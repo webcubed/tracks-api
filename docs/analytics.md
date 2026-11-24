@@ -196,7 +196,7 @@ How often service runs. `route` narrows to one route's first departures; `stop` 
 
 Each route in the report carries the feed's own `longName` and `shortName`, so a client that has not loaded a feed's route list can still name the route.
 
-`agency=bus` merges the six borough feeds into one report for the whole bus network: `route` filters inside every feed, and a `stop` still needs its borough feed (`400 AGENCY_REQUIRED` otherwise). Reading all six costs about twenty seconds cold, so each feed's timetable is scanned once per date and shared with any request already scanning it, and the merged bus report is built in the background at startup and after each hourly feed refresh. Warm, it answers in a few milliseconds.
+`agency=bus` merges the six borough feeds into one report for the whole bus network: `route` filters inside every feed, and a `stop` still needs its borough feed (`400 AGENCY_REQUIRED` otherwise). Reading all six costs about twenty seconds cold, so each feed's timetable is scanned once per date and shared with any request already scanning it, and the merged bus report is built in the background once at startup. Warm, it answers in a few milliseconds. It is not rebuilt by the hourly static refresh: rescanning six feeds there stalled live queries for about twenty seconds every hour, and a report is fixed for its date, so a rebuild could only re-derive the same answer.
 
 ## Why frequency comes from the timetable
 

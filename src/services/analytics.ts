@@ -564,11 +564,6 @@ async function memoizedFrequency(
 	return running;
 }
 
-/** Drop cached scans: the hourly static refresh may have changed a feed. */
-export function clearFrequencyCache(): void {
-	frequencyMemo.clear();
-}
-
 export async function getFrequency(options: {
 	agency: AgencyId;
 	date: string;
