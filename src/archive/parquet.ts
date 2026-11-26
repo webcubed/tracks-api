@@ -17,7 +17,7 @@ export type ColumnSpec = {
 const INSERT_CHUNK = 400;
 
 /**
- * One temp table at a time. The recorder flushes both datasets at once, and a
+ * One temp table at a time. The recorder flushes both datasets in turn, and a
  * shared table name let the second flush find the first one's columns.
  */
 let writeTail: Promise<unknown> = Promise.resolve();
@@ -33,19 +33,17 @@ function literal(value: string | number | undefined, type: ColumnType): string {
 }
 
 /**
- * Rows to parquet bytes, through DuckDB's own writer (ZSTD). The project
- * already ships DuckDB for reading, so the archive does not need a parquet
- * library to serialize a few hundred rows per flush.
+ * Chunks to parquet bytes, through DuckDB's own writer (ZSTD), one chunk at a
+ * time. The recorder hands over a spooled sample per chunk, so serializing a
+ * long backlog costs one sample of heap rather than all of it.
  */
-export async function rowsToParquet(
+export async function chunksToParquet(
 	columns: readonly ColumnSpec[],
-	rows: readonly Row[]
+	chunks: AsyncIterable<readonly Row[]>
 ): Promise<Uint8Array> {
-	if (rows.length === 0) return new Uint8Array();
-
 	const task = writeTail.then(
-		async () => write(columns, rows),
-		async () => write(columns, rows)
+		async () => write(columns, chunks),
+		async () => write(columns, chunks)
 	);
 	writeTail = task.then(
 		() => undefined,
@@ -57,7 +55,7 @@ export async function rowsToParquet(
 
 async function write(
 	columns: readonly ColumnSpec[],
-	rows: readonly Row[]
+	chunks: AsyncIterable<readonly Row[]>
 ): Promise<Uint8Array> {
 	writes += 1;
 	const table = `archive_batch_${process.pid}_${writes}`;
@@ -75,27 +73,32 @@ async function write(
 
 	try {
 		const db = await getArchiveDb();
-		for (let start = 0; start < rows.length; start += INSERT_CHUNK) {
-			const chunk = rows.slice(start, start + INSERT_CHUNK);
-			const values = chunk
-				.map(
-					(row) =>
-						`(${row
-							.map((value, index) =>
-								literal(value, columns[index]?.type ?? "VARCHAR")
-							)
-							.join(", ")})`
-				)
-				.join(", ");
-			// eslint-disable-next-line no-await-in-loop -- sequential on one temp table
-			await db.run(`INSERT INTO ${table} VALUES ${values}`);
+		let total = 0;
+		for await (const rows of chunks) {
+			total += rows.length;
+			for (let start = 0; start < rows.length; start += INSERT_CHUNK) {
+				const chunk = rows.slice(start, start + INSERT_CHUNK);
+				const values = chunk
+					.map(
+						(row) =>
+							`(${row
+								.map((value, index) =>
+									literal(value, columns[index]?.type ?? "VARCHAR")
+								)
+								.join(", ")})`
+					)
+					.join(", ");
+				// eslint-disable-next-line no-await-in-loop -- sequential on one temp table
+				await db.run(`INSERT INTO ${table} VALUES ${values}`);
+			}
 		}
+
+		if (total === 0) return new Uint8Array();
 
 		await runArchiveStatement(
 			`COPY ${table} TO '${target}' (FORMAT PARQUET, COMPRESSION ZSTD)`
 		);
 		// Read now: the recorder may keep several flushes queued behind this one.
-		// eslint-disable-next-line no-await-in-loop -- one read per batch
 		return new Uint8Array(await readFile(target));
 	} finally {
 		await unlink(target).catch(() => undefined);

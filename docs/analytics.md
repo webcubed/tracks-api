@@ -47,7 +47,9 @@ Either way it is one loop: sample every `ARCHIVE_SAMPLE_MS`, write what is buffe
 
 A failed upload returns its rows to the buffer and is retried on the next flush, and the upload itself retries server errors, so a short storage outage delays the archive instead of losing a part.
 
-That retry is what the row caps exist for. A storage outage means every flush fails and the buffer keeps growing, and in-process recording shares a 512 MB host with the API and two DuckDB instances. The buffer holds at most `ARCHIVE_BUFFER_FLEET` and `ARCHIVE_BUFFER_ARRIVALS` rows — measured, about 400 bytes of heap each, so roughly 55 MB together — and past that the oldest rows go and the flush logs how many. If the buffer passes three quarters of either cap, the recorder flushes straight away instead of waiting for its timer, so a cap only shapes what an outage can cost and never drops rows on a healthy day.
+Between flushes nothing waits in the heap. Every sample is written to its own small JSON file under `ARCHIVE_SPOOL_DIR` (the OS temp directory unless it is set), and a flush streams those files into DuckDB one at a time. That matters because a flush can hold a quarter hour of service, or a day of it after a storage outage, and in-process recording shares a 512 MB host with the API and two DuckDB instances: serializing a backlog costs one sample of heap, not the backlog itself. A failed upload leaves its files where they are, so its retry needs no copy of the rows in memory either — the next flush streams the same files again.
+
+The spool is still capped, at `ARCHIVE_BUFFER_FLEET` and `ARCHIVE_BUFFER_ARRIVALS` rows per dataset: past a cap the oldest samples' files are deleted and the flush logs how many rows went. The cap now bounds disk rather than heap. If the spool passes three quarters of either cap, the recorder flushes straight away instead of waiting for its timer, so a cap only shapes what an outage can cost and never drops rows on a healthy day.
 
 | Variable                        | Default  | Meaning                                                         |
 | ------------------------------- | -------- | --------------------------------------------------------------- |
@@ -60,8 +62,9 @@ That retry is what the row caps exist for. A storage outage means every flush fa
 | `ARCHIVE_RECORD`                | unset    | `1` records inside the server process instead of a separate one |
 | `ARCHIVE_SAMPLE_MS`             | `60000`  | Time between feed samples                                       |
 | `ARCHIVE_FLUSH_MS`              | `900000` | Time between uploads                                            |
-| `ARCHIVE_BUFFER_FLEET`          | `20000`  | Most fleet rows held between flushes                            |
-| `ARCHIVE_BUFFER_ARRIVALS`       | `120000` | Most arrival rows held between flushes                          |
+| `ARCHIVE_SPOOL_DIR`             | temp dir | Where samples wait between flushes                              |
+| `ARCHIVE_BUFFER_FLEET`          | `20000`  | Most fleet rows spooled between flushes                         |
+| `ARCHIVE_BUFFER_ARRIVALS`       | `120000` | Most arrival rows spooled between flushes                       |
 | `ARCHIVE_DUCKDB`                | unset    | `shared` puts archive reads on the live DuckDB connection       |
 | `ARCHIVE_DUCKDB_MEMORY_LIMIT`   | `128MB`  | Memory ceiling for the archive connection                       |
 | `FREQUENCY_DUCKDB`              | unset    | `shared` puts timetable scans on the live DuckDB connection     |

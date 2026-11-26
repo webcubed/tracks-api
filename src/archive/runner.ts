@@ -7,19 +7,35 @@ import {
 	FLEET_COLUMNS,
 	MAX_ARRIVAL_ROWS,
 	MAX_FLEET_ROWS,
+	SPOOL_ROOT,
+	spoolRows,
 } from "@/archive/recorder";
-import { uploadBatch } from "@/archive/store";
+import { uploadPart } from "@/archive/store";
 import { fetchRealtime, lookupTrips } from "@/services/realtime";
 import { getVehiclesForAgency } from "@/services/vehicles";
 
 /**
  * The archive is filled by this loop and nothing else: sample the live feeds
- * into a buffer, and write whatever is buffered as immutable parquet parts.
+ * into a spool, and write whatever is spooled as immutable parquet parts.
  * `scripts/record.ts` runs it as its own process; the server can run it in
  * process instead when a host keeps it awake (`ARCHIVE_RECORD=1`).
  */
 export const SAMPLE_MS = Number(process.env.ARCHIVE_SAMPLE_MS ?? 60_000);
 export const FLUSH_MS = Number(process.env.ARCHIVE_FLUSH_MS ?? 15 * 60_000);
+
+/** The two datasets, each with the spool it drains. */
+const FLEET_PART = {
+	spool: "fleet",
+	dataset: "lirr_fleet",
+	columns: FLEET_COLUMNS,
+} as const;
+const ARRIVAL_PART = {
+	spool: "arrivals",
+	dataset: "arrivals",
+	columns: ARRIVAL_COLUMNS,
+} as const;
+
+type DatasetWrite = typeof FLEET_PART | typeof ARRIVAL_PART;
 
 function stamp(): string {
 	return new Date().toISOString().slice(11, 19);
@@ -49,7 +65,7 @@ async function sample(buffer: ArchiveBuffer): Promise<void> {
 	const now = Math.floor(Date.now() / 1000);
 	const vehicles = await getVehiclesForAgency("lirr");
 	const fleet = captureLirrFleet(vehicles, now);
-	buffer.addFleet(fleet);
+	await buffer.addFleet(fleet, now);
 
 	const [subwayEntities, lirrEntities] = await Promise.all([
 		fetchRealtime("subway", ["*"]),
@@ -60,48 +76,51 @@ async function sample(buffer: ArchiveBuffer): Promise<void> {
 		...captureArrivals("lirr", lirrEntities, now),
 	];
 	const arrivals = await withLirrRoutes(rows);
-	const kept = buffer.addArrivals(arrivals);
+	const kept = await buffer.addArrivals(arrivals, now);
 
 	console.info(
-		`[record] ${stamp()} fleet +${fleet.length} · arrivals +${kept} of ${arrivals.length} (${buffer.size} buffered)`
+		`[record] ${stamp()} fleet +${fleet.length} · arrivals +${kept} of ${arrivals.length} (${buffer.size} spooled)`
 	);
 }
 
 /**
- * Write whatever is buffered. A failed upload puts the rows back at the front of
- * the buffer, so a bucket outage delays the archive instead of dropping it.
+ * Write one dataset's spool, streaming each sample file in turn. A failed
+ * upload leaves its files in place, so a bucket outage delays the archive
+ * instead of dropping it.
  */
+async function writePart(
+	buffer: ArchiveBuffer,
+	{ spool, dataset, columns }: DatasetWrite
+): Promise<void> {
+	const chunks = buffer.pending(spool);
+	const [first] = chunks;
+	if (!first) return;
+
+	const part = await uploadPart(dataset, columns, {
+		chunks: spoolRows(chunks),
+		epoch: first.epoch,
+		rows: chunks.reduce((total, chunk) => total + chunk.rows, 0),
+	});
+	if (part)
+		console.info(
+			`[record] ${stamp()} wrote ${part.key} (${part.rows} rows, ${part.bytes} bytes)`
+		);
+
+	// Only now: a part that did not land keeps its spool for the next flush.
+	await buffer.release(spool, chunks);
+}
+
 async function flush(buffer: ArchiveBuffer): Promise<void> {
-	const drained = buffer.drain();
 	const dropped = buffer.takeDropped();
 	if (dropped > 0)
 		console.warn(
-			`[record] ${stamp()} buffer hit its cap; dropped the ${dropped} oldest rows`
+			`[record] ${stamp()} spool passed its cap; dropped the ${dropped} oldest rows`
 		);
-	if (drained.fleet.length === 0 && drained.arrivals.length === 0) return;
 
-	try {
-		// One dataset at a time, and its rows released as soon as its part is
-		// written: both writes queue on the same DuckDB connection anyway, and a
-		// flush holding a full arrival buffer should not also hold the fleet rows.
-		const fleet = await uploadBatch("lirr_fleet", FLEET_COLUMNS, drained.fleet);
-		drained.fleet = [];
-		const arrivals = await uploadBatch(
-			"arrivals",
-			ARRIVAL_COLUMNS,
-			drained.arrivals
-		);
-		drained.arrivals = [];
-
-		for (const part of [fleet, arrivals])
-			if (part)
-				console.info(
-					`[record] ${stamp()} wrote ${part.key} (${part.rows} rows, ${part.bytes} bytes)`
-				);
-	} catch (error) {
-		buffer.restore(drained);
-		throw error;
-	}
+	// One dataset at a time, its files released before the next one is
+	// serialized: a flush should never hold two spools at once.
+	await writePart(buffer, FLEET_PART);
+	await writePart(buffer, ARRIVAL_PART);
 }
 
 export type Recorder = {
@@ -109,7 +128,7 @@ export type Recorder = {
 	once: () => Promise<void>;
 	/** Sample now and on a timer, flushing on its own timer, until `stop`. */
 	start: () => void;
-	/** Stop the timers and write what is buffered, including a sample already running. */
+	/** Stop the timers and write what is spooled, including a sample already running. */
 	stop: () => Promise<void>;
 };
 
@@ -173,10 +192,11 @@ export function createRecorder(
 		async once() {
 			await sampleSafely();
 			await flush(buffer);
+			await buffer.close();
 		},
 		start() {
 			console.info(
-				`[record] buffering at most ${MAX_FLEET_ROWS} fleet and ${MAX_ARRIVAL_ROWS} arrival rows`
+				`[record] spooling to ${SPOOL_ROOT}, at most ${MAX_FLEET_ROWS} fleet and ${MAX_ARRIVAL_ROWS} arrival rows`
 			);
 			flushTimer = setInterval(() => {
 				void flushSafely("flush failed");
@@ -192,6 +212,8 @@ export function createRecorder(
 				// the final flush is the last chance to write its rows.
 				if (sampling) await sampling;
 				await flushSafely("final flush failed");
+				// Nothing will retry once this process is gone, so the spool goes too.
+				await buffer.close();
 			})();
 
 			await halted;

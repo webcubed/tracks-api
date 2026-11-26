@@ -5,7 +5,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, rename, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { rowsToParquet } from "@/archive/parquet";
+import { chunksToParquet } from "@/archive/parquet";
 import { getObject, listObjects, putObject } from "@/lib/b2";
 
 /**
@@ -165,25 +165,35 @@ export async function archiveFiles(
 
 export type UploadedPart = { key: string; rows: number; bytes: number };
 
-/** Serialize a buffer and upload it as one immutable part. */
-export async function uploadBatch(
+/** A spooled batch: its files, the epoch they start at, and how many rows it should hold. */
+export type SpooledBatch = {
+	chunks: AsyncIterable<readonly Row[]>;
+	epoch: number;
+	rows: number;
+};
+
+/**
+ * Serialize a spooled batch and upload it as one immutable part. The chunks are
+ * read one at a time, so the batch is never all in the heap at once.
+ */
+export async function uploadPart(
 	dataset: Dataset,
 	columns: readonly ColumnSpec[],
-	rows: readonly Row[]
+	{ chunks, epoch, rows }: SpooledBatch
 ): Promise<UploadedPart | undefined> {
-	if (rows.length === 0) return undefined;
+	if (rows === 0) return undefined;
 
-	const [firstRow] = rows;
-	const epoch = Number(firstRow?.[0] ?? Math.floor(Date.now() / 1000));
 	const suffix = createHash("sha256")
-		.update(`${dataset}:${epoch}:${rows.length}:${process.pid}`)
+		.update(`${dataset}:${epoch}:${rows}:${process.pid}`)
 		.digest("hex")
 		.slice(0, 8);
 	const key = `${ARCHIVE_PREFIX}/${dataset}/dt=${dayOf(epoch)}/part-${epoch}-${suffix}.parquet`;
-	const body = await rowsToParquet(columns, rows);
+	const body = await chunksToParquet(columns, chunks);
+	if (body.byteLength === 0) return undefined;
+
 	await putObject(key, body);
 
-	return { key, rows: rows.length, bytes: body.byteLength };
+	return { key, rows, bytes: body.byteLength };
 }
 
 export type ArchiveCoverage = {
