@@ -3,8 +3,10 @@ import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { createRecorder, FLUSH_MS, SAMPLE_MS } from "./archive/runner";
 import { AGENCY_IDS, getJourneyIndexUrl } from "./constants";
 import { experimental } from "./experimental";
+import { missingB2Env } from "./lib/b2";
 import { loadTable } from "./lib/loadTable";
 import { clearMemoized } from "./lib/memoize";
 import { cachedParquet } from "./lib/parquetCache";
@@ -169,6 +171,49 @@ serve({
 console.info(
 	`[startup] Server ready at http://localhost:${port} (startup took ${elapsed(startupStartedAt)})`
 );
+
+/**
+ * Recording in process, for a host that keeps this server awake anyway: a free
+ * web service pinged every few minutes is awake as much as a paid worker, and
+ * it costs no second instance. Off by default, because a host that does sleep
+ * would leave a hole in the archive, and because a dev server with bucket
+ * credentials in `.env` should not be writing parts.
+ */
+function startRecording(): void {
+	if (process.env.ARCHIVE_RECORD !== "1") return;
+
+	const missing = missingB2Env();
+	if (missing.length > 0) {
+		console.warn(`[record] not recording: set ${missing.join(", ")}`);
+		return;
+	}
+
+	const recorder = createRecorder();
+
+	// A deploy or a recycle restarts this process, so the flush on the way out is
+	// what keeps the archive continuous instead of losing a quarter hour of it.
+	const shutdown = (): void => {
+		recorder
+			.stop()
+			.catch((error: unknown) => {
+				console.error("[record] shutdown failed:", error);
+			})
+			.finally(() => {
+				// eslint-disable-next-line unicorn/no-process-exit
+				process.exit(0);
+			});
+	};
+
+	process.once("SIGTERM", shutdown);
+	process.once("SIGINT", shutdown);
+
+	recorder.start();
+	console.info(
+		`[record] recording in process, sampling every ${SAMPLE_MS / 1000}s, flushing every ${FLUSH_MS / 1000}s`
+	);
+}
+
+startRecording();
 /** Both caches are optional infrastructure: readiness never waits on them. */
 async function warmInBackground(): Promise<void> {
 	try {

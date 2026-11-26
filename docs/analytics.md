@@ -30,13 +30,20 @@ The bucket is any S3-compatible store; this deployment uses Backblaze B2.
 
 ## Running the recorder
 
-Recording is a separate process. The API sleeps on free hosting, and a recorder that only ran inside it would leave a hole in the archive every night.
+Recording needs a process that stays up; the archive has a hole wherever there is not one. Two ways to give it that:
+
+- `pnpm record` as its own process, on any always-on host. This is the default, because a free web service sleeps, and a recorder that only ran inside a sleeping server would leave a hole every night.
+- `ARCHIVE_RECORD=1` inside the server process. A host kept awake by something else — a free web service pinged every few minutes is enough, and `/` answers `ok` without touching DuckDB — is awake as much as a paid worker and costs no second instance.
+
+In-process recording is off by default: a dev server with bucket credentials in `.env` should not be writing parts, and a host that does sleep would rather show an honest gap than a silent one.
 
 ```sh
 pnpm record              # sample every ARCHIVE_SAMPLE_MS, flush every ARCHIVE_FLUSH_MS
 pnpm record --once       # one sample, one flush, then exit
 pnpm record --probe      # parts, bytes and time span in the bucket
 ```
+
+Either way it is one loop: sample every `ARCHIVE_SAMPLE_MS`, write what is buffered every `ARCHIVE_FLUSH_MS`, and flush once more on `SIGTERM` or `SIGINT`, so a deploy costs a sample or two rather than the buffer.
 
 A failed upload returns its rows to the buffer and is retried on the next flush, and the upload itself retries server errors, so a short storage outage delays the archive instead of losing a part.
 
@@ -48,6 +55,7 @@ A failed upload returns its rows to the buffer and is retried on the next flush,
 | `B2_APP_KEY`                    | required | Application key                                                 |
 | `B2_BUCKET`                     | required | Bucket name                                                     |
 | `ARCHIVE_PREFIX`                | `v1`     | Key prefix for every dataset                                    |
+| `ARCHIVE_RECORD`                | unset    | `1` records inside the server process instead of a separate one |
 | `ARCHIVE_SAMPLE_MS`             | `60000`  | Time between feed samples                                       |
 | `ARCHIVE_FLUSH_MS`              | `900000` | Time between uploads                                            |
 | `ARCHIVE_DUCKDB`                | unset    | `shared` puts archive reads on the live DuckDB connection       |
