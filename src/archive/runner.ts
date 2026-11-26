@@ -5,6 +5,8 @@ import {
 	captureArrivals,
 	captureLirrFleet,
 	FLEET_COLUMNS,
+	MAX_ARRIVAL_ROWS,
+	MAX_FLEET_ROWS,
 } from "@/archive/recorder";
 import { uploadBatch } from "@/archive/store";
 import { fetchRealtime, lookupTrips } from "@/services/realtime";
@@ -32,16 +34,15 @@ async function withLirrRoutes(rows: Row[]): Promise<Row[]> {
 
 	const trips = await lookupTrips("lirr", missing.toSorted());
 
-	return rows.map((row): Row =>
-		row[2]
-			? row
-			: [
-					row[0],
-					row[1],
-					trips.get(String(row[3]))?.routeId ?? "",
-					...row.slice(3),
-				]
-	);
+	// Filled in place: a second copy of every sampled row is another copy of the
+	// buffer this process does not need.
+	for (const row of rows) {
+		const known = row[2];
+		if (known) continue;
+		row[2] = trips.get(String(row[3]))?.routeId ?? "";
+	}
+
+	return rows;
 }
 
 async function sample(buffer: ArchiveBuffer): Promise<void> {
@@ -72,21 +73,33 @@ async function sample(buffer: ArchiveBuffer): Promise<void> {
  */
 async function flush(buffer: ArchiveBuffer): Promise<void> {
 	const drained = buffer.drain();
+	const dropped = buffer.takeDropped();
+	if (dropped > 0)
+		console.warn(
+			`[record] ${stamp()} buffer hit its cap; dropped the ${dropped} oldest rows`
+		);
 	if (drained.fleet.length === 0 && drained.arrivals.length === 0) return;
 
 	try {
-		const parts = await Promise.all([
-			uploadBatch("lirr_fleet", FLEET_COLUMNS, drained.fleet),
-			uploadBatch("arrivals", ARRIVAL_COLUMNS, drained.arrivals),
-		]);
-		for (const part of parts)
+		// One dataset at a time, and its rows released as soon as its part is
+		// written: both writes queue on the same DuckDB connection anyway, and a
+		// flush holding a full arrival buffer should not also hold the fleet rows.
+		const fleet = await uploadBatch("lirr_fleet", FLEET_COLUMNS, drained.fleet);
+		drained.fleet = [];
+		const arrivals = await uploadBatch(
+			"arrivals",
+			ARRIVAL_COLUMNS,
+			drained.arrivals
+		);
+		drained.arrivals = [];
+
+		for (const part of [fleet, arrivals])
 			if (part)
 				console.info(
 					`[record] ${stamp()} wrote ${part.key} (${part.rows} rows, ${part.bytes} bytes)`
 				);
 	} catch (error) {
-		buffer.fleet = [...drained.fleet, ...buffer.fleet];
-		buffer.arrivals = [...drained.arrivals, ...buffer.arrivals];
+		buffer.restore(drained);
 		throw error;
 	}
 }
@@ -96,7 +109,7 @@ export type Recorder = {
 	once: () => Promise<void>;
 	/** Sample now and on a timer, flushing on its own timer, until `stop`. */
 	start: () => void;
-	/** Stop the timers and write what is buffered. Failures are logged. */
+	/** Stop the timers and write what is buffered, including a sample already running. */
 	stop: () => Promise<void>;
 };
 
@@ -108,6 +121,11 @@ export function createRecorder(
 	let sampleTimer: ReturnType<typeof setTimeout> | undefined;
 	let flushTimer: ReturnType<typeof setInterval> | undefined;
 	let stopping = false;
+	/** The sample running now: its rows are archive rows too. */
+	let sampling: Promise<void> | undefined;
+	/** Flushes run one after another, so a timer's flush cannot interleave with the last one. */
+	let flushing: Promise<void> = Promise.resolve();
+	let halted: Promise<void> | undefined;
 
 	/** A sample is worth one log line when it fails and none when it works. */
 	const sampleSafely = async (): Promise<void> => {
@@ -119,16 +137,31 @@ export function createRecorder(
 	};
 
 	const flushSafely = async (failure: string): Promise<void> => {
-		try {
-			await flush(buffer);
-		} catch (error) {
-			console.error(`[record] ${stamp()} ${failure}:`, error);
-		}
+		flushing = flushing.then(async () => {
+			try {
+				await flush(buffer);
+			} catch (error) {
+				console.error(`[record] ${stamp()} ${failure}:`, error);
+			}
+		});
+
+		await flushing;
 	};
 
 	const tick = async (): Promise<void> => {
-		await sampleSafely();
+		const current = sampleSafely();
+		sampling = current;
+		try {
+			await current;
+		} finally {
+			if (sampling === current) sampling = undefined;
+		}
+
 		if (stopping) return;
+
+		if (buffer.crowded) await flushSafely("early flush failed");
+		if (stopping) return;
+
 		sampleTimer = setTimeout(() => {
 			tick().catch((error: unknown) => {
 				console.error("[record] sample loop failed:", error);
@@ -142,17 +175,26 @@ export function createRecorder(
 			await flush(buffer);
 		},
 		start() {
+			console.info(
+				`[record] buffering at most ${MAX_FLEET_ROWS} fleet and ${MAX_ARRIVAL_ROWS} arrival rows`
+			);
 			flushTimer = setInterval(() => {
-				flushSafely("flush failed").catch(() => undefined);
+				void flushSafely("flush failed");
 			}, flushMs);
 			void tick();
 		},
 		async stop() {
-			if (stopping) return;
-			stopping = true;
-			if (sampleTimer) clearTimeout(sampleTimer);
-			if (flushTimer) clearInterval(flushTimer);
-			await flushSafely("final flush failed");
+			halted ??= (async () => {
+				stopping = true;
+				if (sampleTimer) clearTimeout(sampleTimer);
+				if (flushTimer) clearInterval(flushTimer);
+				// A sample that is already fetching the feeds is part of the archive;
+				// the final flush is the last chance to write its rows.
+				if (sampling) await sampling;
+				await flushSafely("final flush failed");
+			})();
+
+			await halted;
 		},
 	};
 }

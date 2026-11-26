@@ -122,6 +122,38 @@ type SeenArrival = { delay: number | undefined; ts: number };
 const KEEPALIVE_SECONDS = 300;
 /** A prediction that moved by this much is news even inside the keepalive. */
 const MOVED_SECONDS = 60;
+/**
+ * A prediction not seen in four keepalive windows is finished, not deduplicated:
+ * one extra row is cheaper than holding its key for the rest of the day.
+ */
+const SEEN_TTL_SECONDS = KEEPALIVE_SECONDS * 4;
+
+/** A positive whole number from the environment, else the fallback. */
+function positiveInteger(name: string, fallback: number): number {
+	const configured = Number(process.env[name]);
+	return Number.isInteger(configured) && configured > 0 ? configured : fallback;
+}
+
+/**
+ * Rows held between flushes, per dataset. A flush every fifteen minutes keeps
+ * roughly a thousand fleet rows and tens of thousands of arrival rows; these
+ * caps are the ceiling for a storage outage, not the working size. Measured on
+ * this shape, a buffered row costs about 400 bytes of heap, so the pair bounds
+ * the buffer near 55 MB: the server's own `--max-old-space-size` is 256, and a
+ * 512 MB host also carries two DuckDB instances and the live API.
+ */
+export const MAX_FLEET_ROWS = positiveInteger("ARCHIVE_BUFFER_FLEET", 20_000);
+export const MAX_ARRIVAL_ROWS = positiveInteger(
+	"ARCHIVE_BUFFER_ARRIVALS",
+	120_000
+);
+
+export type ArchiveLimits = { fleet: number; arrivals: number };
+
+const DEFAULT_LIMITS: ArchiveLimits = {
+	fleet: MAX_FLEET_ROWS,
+	arrivals: MAX_ARRIVAL_ROWS,
+};
 
 /**
  * Samples between flushes. Each arrival row is only kept when the delay is new,
@@ -133,9 +165,16 @@ export class ArchiveBuffer {
 	fleet: Row[] = [];
 	arrivals: Row[] = [];
 	private readonly seen = new Map<string, SeenArrival>();
+	private readonly limits: ArchiveLimits;
+	private droppedRows = 0;
+
+	constructor(limits: ArchiveLimits = DEFAULT_LIMITS) {
+		this.limits = limits;
+	}
 
 	addFleet(rows: Row[]): void {
 		this.fleet.push(...rows);
+		this.trim("fleet");
 	}
 
 	addArrivals(rows: Row[]): number {
@@ -160,18 +199,73 @@ export class ArchiveBuffer {
 			}
 		}
 
+		this.trim("arrivals");
+
 		return kept;
+	}
+
+	/**
+	 * Rows near the cap mean the flush timer is outrunning the buffer: flush now
+	 * rather than let the cap drop samples that were already recorded.
+	 */
+	get crowded(): boolean {
+		return (
+			this.fleet.length >= this.limits.fleet * 0.75 ||
+			this.arrivals.length >= this.limits.arrivals * 0.75
+		);
 	}
 
 	get size(): number {
 		return this.fleet.length + this.arrivals.length;
 	}
 
+	/** Rows the cap discarded since this was last asked for. */
+	takeDropped(): number {
+		const dropped = this.droppedRows;
+		this.droppedRows = 0;
+
+		return dropped;
+	}
+
 	drain(): { fleet: Row[]; arrivals: Row[] } {
 		const drained = { fleet: this.fleet, arrivals: this.arrivals };
 		this.fleet = [];
 		this.arrivals = [];
+		this.pruneSeen(Math.floor(Date.now() / 1000));
 
 		return drained;
+	}
+
+	/** A failed flush's rows go back in front, oldest first, still inside the cap. */
+	restore(rows: { fleet: Row[]; arrivals: Row[] }): void {
+		if (rows.fleet.length > 0) {
+			this.fleet = [...rows.fleet, ...this.fleet];
+			this.trim("fleet");
+		}
+
+		if (rows.arrivals.length > 0) {
+			this.arrivals = [...rows.arrivals, ...this.arrivals];
+			this.trim("arrivals");
+		}
+	}
+
+	/**
+	 * Past the cap the oldest rows go. The archive is a record of what ran, but a
+	 * process that dies has no archive at all: dropping the tail of an outage is
+	 * the only way a storage outage does not take the API down with it.
+	 */
+	private trim(dataset: "fleet" | "arrivals"): void {
+		const rows = this[dataset];
+		const limit = this.limits[dataset];
+		if (rows.length <= limit) return;
+
+		const excess = rows.length - limit;
+		rows.splice(0, excess);
+		this.droppedRows += excess;
+	}
+
+	private pruneSeen(now: number): void {
+		for (const [key, seen] of this.seen)
+			if (now - seen.ts > SEEN_TTL_SECONDS) this.seen.delete(key);
 	}
 }

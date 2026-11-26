@@ -43,9 +43,11 @@ pnpm record --once       # one sample, one flush, then exit
 pnpm record --probe      # parts, bytes and time span in the bucket
 ```
 
-Either way it is one loop: sample every `ARCHIVE_SAMPLE_MS`, write what is buffered every `ARCHIVE_FLUSH_MS`, and flush once more on `SIGTERM` or `SIGINT`, so a deploy costs a sample or two rather than the buffer.
+Either way it is one loop: sample every `ARCHIVE_SAMPLE_MS`, write what is buffered every `ARCHIVE_FLUSH_MS`, and flush once more on `SIGTERM` or `SIGINT`, so a deploy costs a sample rather than the buffer. A sample that is already fetching the feeds when the signal arrives is waited for, not dropped: its rows go into that last flush.
 
 A failed upload returns its rows to the buffer and is retried on the next flush, and the upload itself retries server errors, so a short storage outage delays the archive instead of losing a part.
+
+That retry is what the row caps exist for. A storage outage means every flush fails and the buffer keeps growing, and in-process recording shares a 512 MB host with the API and two DuckDB instances. The buffer holds at most `ARCHIVE_BUFFER_FLEET` and `ARCHIVE_BUFFER_ARRIVALS` rows — measured, about 400 bytes of heap each, so roughly 55 MB together — and past that the oldest rows go and the flush logs how many. If the buffer passes three quarters of either cap, the recorder flushes straight away instead of waiting for its timer, so a cap only shapes what an outage can cost and never drops rows on a healthy day.
 
 | Variable                        | Default  | Meaning                                                         |
 | ------------------------------- | -------- | --------------------------------------------------------------- |
@@ -58,6 +60,8 @@ A failed upload returns its rows to the buffer and is retried on the next flush,
 | `ARCHIVE_RECORD`                | unset    | `1` records inside the server process instead of a separate one |
 | `ARCHIVE_SAMPLE_MS`             | `60000`  | Time between feed samples                                       |
 | `ARCHIVE_FLUSH_MS`              | `900000` | Time between uploads                                            |
+| `ARCHIVE_BUFFER_FLEET`          | `20000`  | Most fleet rows held between flushes                            |
+| `ARCHIVE_BUFFER_ARRIVALS`       | `120000` | Most arrival rows held between flushes                          |
 | `ARCHIVE_DUCKDB`                | unset    | `shared` puts archive reads on the live DuckDB connection       |
 | `ARCHIVE_DUCKDB_MEMORY_LIMIT`   | `128MB`  | Memory ceiling for the archive connection                       |
 | `FREQUENCY_DUCKDB`              | unset    | `shared` puts timetable scans on the live DuckDB connection     |
