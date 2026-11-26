@@ -33,9 +33,9 @@ The bucket is any S3-compatible store; this deployment uses Backblaze B2.
 Recording needs a process that stays up; the archive has a hole wherever there is not one. Two ways to give it that:
 
 - `pnpm record` as its own process, on any always-on host. This is the default, because a free web service sleeps, and a recorder that only ran inside a sleeping server would leave a hole every night.
-- `ARCHIVE_RECORD=1` inside the server process. A host kept awake by something else — a free web service pinged every few minutes is enough, and `/` answers `ok` without touching DuckDB — is awake as much as a paid worker and costs no second instance.
+- `ARCHIVE_RECORD=1` inside the server process. A host kept awake by something else — a free web service pinged every few minutes is enough, and `/` answers `ok` without touching DuckDB — is awake as much as a paid worker and costs no second instance. Render is that host, so the server records there on its own; `ARCHIVE_RECORD=1` turns it on anywhere else, and `ARCHIVE_RECORD=0` turns it off on Render.
 
-In-process recording is off by default: a dev server with bucket credentials in `.env` should not be writing parts, and a host that does sleep would rather show an honest gap than a silent one.
+In-process recording is off on a dev machine: a server with bucket credentials in `.env` should not be writing parts, and a host that does sleep would rather show an honest gap than a silent one. Render is the exception, because it is the host configured to be kept awake: `RENDER=true` is the signal, and the server starts recording without an environment variable.
 
 ```sh
 pnpm record              # sample every ARCHIVE_SAMPLE_MS, flush every ARCHIVE_FLUSH_MS
@@ -51,24 +51,24 @@ Between flushes nothing waits in the heap. Every sample is written to its own sm
 
 The spool is still capped, at `ARCHIVE_BUFFER_FLEET` and `ARCHIVE_BUFFER_ARRIVALS` rows per dataset: past a cap the oldest samples' files are deleted and the flush logs how many rows went. The cap now bounds disk rather than heap. If the spool passes three quarters of either cap, the recorder flushes straight away instead of waiting for its timer, so a cap only shapes what an outage can cost and never drops rows on a healthy day.
 
-| Variable                        | Default  | Meaning                                                         |
-| ------------------------------- | -------- | --------------------------------------------------------------- |
-| `B2_ENDPOINT`                   | required | S3 origin, for example `https://s3.us-east-005.backblazeb2.com` |
-| `B2_REGION`                     | required | Signing region, for example `us-east-005`                       |
-| `B2_KEY_ID`                     | required | Application key ID                                              |
-| `B2_APP_KEY`                    | required | Application key                                                 |
-| `B2_BUCKET`                     | required | Bucket name                                                     |
-| `ARCHIVE_PREFIX`                | `v1`     | Key prefix for every dataset                                    |
-| `ARCHIVE_RECORD`                | unset    | `1` records inside the server process instead of a separate one |
-| `ARCHIVE_SAMPLE_MS`             | `60000`  | Time between feed samples                                       |
-| `ARCHIVE_FLUSH_MS`              | `900000` | Time between uploads                                            |
-| `ARCHIVE_SPOOL_DIR`             | temp dir | Where samples wait between flushes                              |
-| `ARCHIVE_BUFFER_FLEET`          | `20000`  | Most fleet rows spooled between flushes                         |
-| `ARCHIVE_BUFFER_ARRIVALS`       | `120000` | Most arrival rows spooled between flushes                       |
-| `ARCHIVE_DUCKDB`                | unset    | `shared` puts archive reads on the live DuckDB connection       |
-| `ARCHIVE_DUCKDB_MEMORY_LIMIT`   | `128MB`  | Memory ceiling for the archive connection                       |
-| `FREQUENCY_DUCKDB`              | unset    | `shared` puts timetable scans on the live DuckDB connection     |
-| `FREQUENCY_DUCKDB_MEMORY_LIMIT` | `128MB`  | Memory ceiling for the timetable connection                     |
+| Variable                        | Default  | Meaning                                                                             |
+| ------------------------------- | -------- | ----------------------------------------------------------------------------------- |
+| `B2_ENDPOINT`                   | required | S3 origin, for example `https://s3.us-east-005.backblazeb2.com`                     |
+| `B2_REGION`                     | required | Signing region, for example `us-east-005`                                           |
+| `B2_KEY_ID`                     | required | Application key ID                                                                  |
+| `B2_APP_KEY`                    | required | Application key                                                                     |
+| `B2_BUCKET`                     | required | Bucket name                                                                         |
+| `ARCHIVE_PREFIX`                | `v1`     | Key prefix for every dataset                                                        |
+| `ARCHIVE_RECORD`                | unset    | `1` records in the server process anywhere, `0` never; unset records on Render only |
+| `ARCHIVE_SAMPLE_MS`             | `60000`  | Time between feed samples                                                           |
+| `ARCHIVE_FLUSH_MS`              | `900000` | Time between uploads                                                                |
+| `ARCHIVE_SPOOL_DIR`             | temp dir | Where samples wait between flushes                                                  |
+| `ARCHIVE_BUFFER_FLEET`          | `20000`  | Most fleet rows spooled between flushes                                             |
+| `ARCHIVE_BUFFER_ARRIVALS`       | `120000` | Most arrival rows spooled between flushes                                           |
+| `ARCHIVE_DUCKDB`                | unset    | `shared` puts archive reads on the live DuckDB connection                           |
+| `ARCHIVE_DUCKDB_MEMORY_LIMIT`   | `128MB`  | Memory ceiling for the archive connection                                           |
+| `FREQUENCY_DUCKDB`              | unset    | `shared` puts timetable scans on the live DuckDB connection                         |
+| `FREQUENCY_DUCKDB_MEMORY_LIMIT` | `128MB`  | Memory ceiling for the timetable connection                                         |
 
 Without the `B2_*` variables, the endpoints below answer `503` with code `ARCHIVE_NOT_CONFIGURED`; the rest of the API is unaffected.
 

@@ -32,7 +32,7 @@ pnpm dev                 # tsx watch, needs .env (missing is fine — nothing re
 pnpm exec tsx src/index.ts   # no watch; server on :3000
 pnpm mcp                 # stdio MCP server (mcp/server.ts), proxies TRACKS_API_URL
 pnpm record              # archive recorder: samples the feeds, flushes parquet to B2 (needs .env)
-#                          ARCHIVE_RECORD=1 records inside the server instead (see docs/analytics.md)
+#                          records in-process on Render; ARCHIVE_RECORD=0/1 overrides (see docs/analytics.md)
 pnpm lint                # xo (see "Lint" below)
 pnpm exec tsc --noEmit   # typecheck — run with lint, always
 pnpm exec prettier --write <files>

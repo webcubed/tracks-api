@@ -23,6 +23,20 @@ import { getVehiclesForAgency } from "@/services/vehicles";
 export const SAMPLE_MS = Number(process.env.ARCHIVE_SAMPLE_MS ?? 60_000);
 export const FLUSH_MS = Number(process.env.ARCHIVE_FLUSH_MS ?? 15 * 60_000);
 
+export type RecordingTrigger = "ARCHIVE_RECORD" | "render";
+
+/**
+ * Records unasked on Render, where the keepalive ping keeps the host awake, and stays off elsewhere; `ARCHIVE_RECORD` overrides either way.
+ */
+export function recordingTrigger(
+	env: NodeJS.ProcessEnv = process.env
+): RecordingTrigger | undefined {
+	const setting = env.ARCHIVE_RECORD?.trim();
+	if (setting === "0") return undefined;
+	if (setting === "1") return "ARCHIVE_RECORD";
+	if (env.RENDER === "true" || env.RENDER_SERVICE_ID) return "render";
+}
+
 /** The two datasets, each with the spool it drains. */
 const FLEET_PART = {
 	spool: "fleet",
